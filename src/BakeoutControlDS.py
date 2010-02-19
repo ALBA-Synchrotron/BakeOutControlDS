@@ -2,13 +2,13 @@
 #    "$Header:  $";
 #=============================================================================
 #
-# file :        BakeOutControlDS.py
+# file :        BakeoutControlDS.py
 #
-# description : Python source for the BakeOutControlDS and its commands. 
+# description : Python source for the BakeoutControlDS and its commands. 
 #                The class is derived from Device. It represents the
 #                CORBA servant object which will be accessed from the
 #                network. All commands which can be executed on the
-#                BakeOutControlDS are implemented in this file.
+#                BakeoutControlDS are implemented in this file.
 #
 # project :     TANGO Device Server
 #
@@ -37,11 +37,11 @@ import time
 from threading import Event
 import serial
 import decimal
-from BakeOutControl import COMMAND, BakeOutController
-from BakeOutEnumeration import *
+from BakeoutControl import COMMAND, BakeoutController
+from BakeoutEnumeration import *
 
 #==================================================================
-#   BakeOutControlDS Class Description:
+#   BakeoutControlDS Class Description:
 #
 #         This device can be used to do a simple control of a Bake Out process.<br/>
 #         <p>
@@ -67,13 +67,13 @@ from BakeOutEnumeration import *
 #   DevState.ON :
 #==================================================================
 
-class BakeOutControlDS(PyTango.Device_3Impl):
+class BakeoutControlDS(PyTango.Device_3Impl):
 #===============================================================================
 # Device constructor
 #===============================================================================
     def __init__(self, cl, name):
         PyTango.Device_3Impl.__init__(self, cl, name)
-        BakeOutControlDS.init_device(self)
+        BakeoutControlDS.init_device(self)
 
 #===============================================================================
 # Device destructor
@@ -115,17 +115,16 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                 self.serial.open()
                 self._numberOfZones = 8
                 self._programs = dict.fromkeys((i for i in range(1, self._numberOfZones + 1)), NO_PROGRAM)
-                self._programs_time = dict.fromkeys((i for i in range(1, self._numberOfZones + 1)), -1.)
-                self._ctrl = BakeOutController(self)
-                self._ctrl.setDaemon(True)
-                self._ctrlQ = self._ctrl.getCtrlQ()
-                self._ctrl.start()
+                self._programs_time = dict.fromkeys((i for i in range(1, self._numberOfZones + 1)), 0.)
+                self._c = BakeoutController(self)
+                self._c.setDaemon(True)
+                self._q = self._c.getQueue()
+                self._c.start()
             else:
                 raise "UnknownController: %s" % self.ControllerType
         except Exception, e:
-            PyTango.Except.throw_exception("BakeOutControlDS_initDeviceException", str(e), str(e))
+            PyTango.Except.throw_exception("BakeoutControlDS_initDeviceException", str(e), str(e))
             self.modbus = self.serial = None
-        
         
         print "\tDevice server " + self.get_name() + " awaiting requests..."
 
@@ -142,7 +141,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
 
 #===============================================================================
 # 
-# BakeOutControlDS read/write attribute methods
+# BakeoutControlDS read/write attribute methods
 #
 #===============================================================================
 #===============================================================================
@@ -150,6 +149,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
 #===============================================================================
     def read_attr_hardware(self, data):
         print "In " + self.get_name() + ".read_attr_hardware()"
+        pass
     
 #===============================================================================
 # Read specified zone program from attribute
@@ -180,17 +180,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".getProgramTimeAttr()"
         
         data = self._programs_time.get(zone)        
-        attr.set_value(data)   
-
-#===============================================================================
-# Write specified zone program to attribute
-#===============================================================================
-    def setProgramTimeAttr(self, zone, attr):
-        print "In " + self.get_name() + ".setProgramTimeAttr()"
-        
-        data = []
-        attr.get_write_value(data)
-        self._programs_time[zone] = float(data[0])
+        attr.set_value(data)
 
 #===============================================================================
 # Read specified zone temperature from attribute   
@@ -385,15 +375,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".read_Program_Time_Zone1()"
         
         self.getProgramTimeAttr(1, attr)
-  
-#===============================================================================
-# Write Program_Time_Zone1 attribute
-#===============================================================================
-    def write_Program_Time_Zone1(self, attr):
-        print "In " + self.get_name() + ".write_Program_Time_Zone1()"
-        
-        self.setProgramTimeAttr(1, attr)
-        
+       
 #===============================================================================
 # Read Program_Time_Zone2 attribute
 #===============================================================================
@@ -401,15 +383,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".read_Program_Time_Zone2()"
         
         self.getProgramTimeAttr(2, attr)
-         
-#===============================================================================
-# Write Program_Time_Zone2 attribute
-#===============================================================================
-    def write_Program_Time_Zone2(self, attr):
-        print "In " + self.get_name() + ".write_Program_Time_Zone2()"
-        
-        self.setProgramTimeAttr(2, attr)
- 
+
 #===============================================================================
 # Read Program_Time_Zone3 attribute
 #===============================================================================
@@ -417,15 +391,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".read_Program_Time_Zone3()"
         
         self.getProgramTimeAttr(3, attr)
-        
-#===============================================================================
-# Write Program_Time_Zone3 attribute
-#===============================================================================
-    def write_Program_Time_Zone3(self, attr):
-        print "In " + self.get_name() + ".write_Program_Time_Zone3()"
-        
-        self.setProgramTimeAttr(3, attr)
- 
+
 #===============================================================================
 # Read Program_Time_Zone4 attribute
 #===============================================================================
@@ -435,29 +401,13 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         self.getProgramTimeAttr(4, attr)
        
 #===============================================================================
-# Write Program_Time_Zone4 attribute
-#===============================================================================
-    def write_Program_Time_Zone4(self, attr):
-        print "In " + self.get_name() + ".write_Program_Time_Zone4()"
-        
-        self.setProgramTimeAttr(4, attr)
- 
-#===============================================================================
 # Read Program_Time_Zone5 attribute
 #===============================================================================
     def read_Program_Time_Zone5(self, attr):
         print "In " + self.get_name() + ".read_Program_Time_Zone5()"
         
         self.getProgramTimeAttr(5, attr)
-        
-#===============================================================================
-# Write Program_Time_Zone5 attribute
-#===============================================================================
-    def write_Program_Time_Zone5(self, attr):
-        print "In " + self.get_name() + ".write_Program_Time_Zone5()"
-        
-        self.setProgramTimeAttr(5, attr)
-  
+ 
 #===============================================================================
 # Read Program_Time_Zone6 attribute
 #===============================================================================
@@ -465,15 +415,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".read_Program_Time_Zone6()"
         
         self.getProgramTimeAttr(6, attr)
-        
-#===============================================================================
-# Write Program_Time_Zone6 attribute
-#===============================================================================
-    def write_Program_Time_Zone6(self, attr):
-        print "In " + self.get_name() + ".write_Program_Time_Zone6()"
-        
-        self.setProgramTimeAttr(6, attr)
- 
+
 #===============================================================================
 # Read Program_Time_Zone7 attribute
 #===============================================================================
@@ -483,28 +425,12 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         self.getProgramTimeAttr(7, attr)
         
 #===============================================================================
-# Write Program_Time_Zone7 attribute
-#===============================================================================
-    def write_Program_Time_Zone7(self, attr):
-        print "In " + self.get_name() + ".write_Program_Time_Zone7()"
-        
-        self.setProgramTimeAttr(7, attr)
- 
-#===============================================================================
 # Read Program_Time_Zone8 attribute
 #===============================================================================
     def read_Program_Time_Zone8(self, attr):
         print "In " + self.get_name() + ".read_Program_Time_Zone8()"
         
         self.getProgramTimeAttr(8, attr)
-
-#===============================================================================
-# Write Program_Time_Zone8 attribute
-#===============================================================================
-    def write_Program_Time_Zone8(self, attr):
-        print "In " + self.get_name() + ".write_Program_Time_Zone8()"
-        
-        self.setProgramTimeAttr(8, attr)
 
 #===============================================================================
 # Read Temperature_All attribute
@@ -636,7 +562,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         
 #===============================================================================
 # 
-# BakeOutControlDS command methods
+# BakeoutControlDS command methods
 #
 #===============================================================================
 #===============================================================================
@@ -648,48 +574,6 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".Reset()"
 
         self.set_state(PyTango.DevState.ON)
-
-#===============================================================================
-# Restart command:
-#===============================================================================               
-    def Restart(self):
-        print "In " + self.get_name() + ".Restart()"
-
-        if ( self.ControllerType.lower() == "eurotherm" ):
-            raise "NotImplemented"
-        elif ( self.ControllerType.lower() == "elotech" ):
-            device = 1
-            instruction = ELOTECH_ISTR.get("ACPT")
-            code = ELOTECH_PARAM.get("ZONE_TOGGLE")
-            value = 1
-        else:
-            raise "UnknownController: %s" % self.ControllerType 
-        
-        for zone in range(1, self._numberOfZones + 1):
-            self.SendCommand([device, zone, instruction, code, value])        
-        
-        self.set_state(PyTango.DevState.ON)
-
-#===============================================================================
-# Stop command:
-#===============================================================================
-    def Stop(self):
-        print "In " + self.get_name() + ".Stop()"
-
-        if ( self.ControllerType.lower() == "eurotherm" ):
-            raise "NotImplemented"
-        elif ( self.ControllerType.lower() == "elotech" ):
-            device = 1
-            instruction = ELOTECH_ISTR.get("ACPT")
-            code = ELOTECH_PARAM.get("ZONE_TOGGLE")
-            value = 0
-        else:
-            raise "UnknownController: %s" % self.ControllerType 
-                
-        for zone in range(1, self._numberOfZones + 1):
-            self.SendCommand([device, zone, instruction, code, value])
-        
-        self.set_state(PyTango.DevState.DISABLE)
 
 #===============================================================================
 # GetPressure command:
@@ -759,15 +643,19 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         return argout
 
 #===============================================================================
-# StartBakeout command:
+# StartStop command:
 #===============================================================================
-    def StartBakeout(self, zone):
-        print "In " + self.get_name() + ".StartBakeout()"
+    def StartStop(self, zone):
+        print "In " + self.get_name() + ".StartStop()"
         
-        self._ctrlQ.put((zone, COMMAND.get("START")))
+        self._q.put((zone, COMMAND.get("START_STOP")))
+        if ( self._programs_time.get(zone)):
+            self._programs_time[zone] = 0.
+        else:
+            self._programs_time[zone] = time.time()
 
 #===============================================================================
-# BakeOutControlDS other methods
+# BakeoutControlDS other methods
 #===============================================================================
     def init_serial(self):
         if ( hasattr(self, "serial") and self.serial ): 
@@ -834,10 +722,10 @@ class BakeOutControlDS(PyTango.Device_3Impl):
          
 #===============================================================================
 # 
-# BakeOutControlDSClass class definition
+# BakeoutControlDSClass class definition
 #
 #===============================================================================
-class BakeOutControlDSClass(PyTango.PyDeviceClass):
+class BakeoutControlDSClass(PyTango.PyDeviceClass):
 # Class Properties
     class_property_list = {
         }
@@ -871,19 +759,13 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
         "Reset":
             [[PyTango.DevVoid, "Returns to initial state, forgets last alarm"], 
             [PyTango.DevVoid, ""]], 
-        "Stop":
-            [[PyTango.DevVoid, "Stops bakeout on all zones"], 
-            [PyTango.DevVoid, ""]], 
-        "Restart":
-            [[PyTango.DevVoid, "Resumes bakeout on all zones"], 
-            [PyTango.DevVoid, ""]], 
         "GetPressure":
             [[PyTango.DevVoid, ""], 
             [PyTango.DevDouble, ""]], 
         "SendCommand":
             [[PyTango.DevVarStringArray, "Issue an instruction to the controller"], 
             [PyTango.DevString, ""]],
-        "StartBakeout":
+        "StartStop":
             [[PyTango.DevUShort, ""],
              [PyTango.DevVoid, ""]]
         }
@@ -933,35 +815,35 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
         "Program_Time_Zone1":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
-            PyTango.READ_WRITE]],
+            PyTango.READ]],
         "Program_Time_Zone2":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
-            PyTango.READ_WRITE]], 
+            PyTango.READ]], 
         "Program_Time_Zone3":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
-            PyTango.READ_WRITE]], 
+            PyTango.READ]], 
         "Program_Time_Zone4":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
-            PyTango.READ_WRITE]], 
+            PyTango.READ]], 
         "Program_Time_Zone5":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
-            PyTango.READ_WRITE]],             
+            PyTango.READ]],             
         "Program_Time_Zone6":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
-            PyTango.READ_WRITE]], 
+            PyTango.READ]], 
         "Program_Time_Zone7":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
-            PyTango.READ_WRITE]], 
+            PyTango.READ]], 
         "Program_Time_Zone8":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
-            PyTango.READ_WRITE]],            
+            PyTango.READ]],            
         "Temperature_All":
             [[PyTango.DevDouble, 
             PyTango.SPECTRUM, 
@@ -1009,22 +891,22 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
         }
 
 #===============================================================================
-# BakeOutControlDSClass Constructor
+# BakeoutControlDSClass Constructor
 #===============================================================================
     def __init__(self, name):
         PyTango.PyDeviceClass.__init__(self, name)
         self.set_type(name);
-        print "In BakeOutControlDSClass constructor"
+        print "In BakeoutControlDSClass constructor"
 
 #===============================================================================
 # 
-# BakeOutControlDS class main method
+# BakeoutControlDS class main method
 #
 #===============================================================================
 if __name__ == "__main__":
     try:
         py = PyTango.PyUtil(sys.argv)
-        py.add_TgClass(BakeOutControlDSClass, BakeOutControlDS, "BakeOutControlDS")
+        py.add_TgClass(BakeoutControlDSClass, BakeoutControlDS, "BakeoutControlDS")
 
         U = PyTango.Util.instance()
         U.server_init()
