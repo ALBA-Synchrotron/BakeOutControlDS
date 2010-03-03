@@ -6,8 +6,7 @@ import time
 from BakeoutControl import COMMAND, BakeoutController
 from BakeoutEnumeration import *
 from decimal import Decimal
-from threading import Event
-
+from threading import Event, Lock
 
 #===============================================================================
 #
@@ -41,9 +40,10 @@ class BakeoutControlDS(PyTango.Device_3Impl):
         self.set_state(PyTango.DevState.ON)
         self.get_device_properties(self.get_device_class())
         self.update_properties()
+        self._sLock = Lock()
         self._pressureVal = self._tempMax = None
         self._pressureTime = self._tempTime = 0
-        self._temps = dict.fromkeys((i for i in range(1, 9)), 1200.)
+        self._temps = dict.fromkeys((i for i in range(1, 9)), TEMP_ERROR)
         
         try: 
             self.pressureAttr = PyTango.AttributeProxy(self.PressureAttribute)
@@ -69,7 +69,7 @@ class BakeoutControlDS(PyTango.Device_3Impl):
                 self._q = self._c.getQueue()
                 self._q.put((0, COMMAND.get("STOP")))                
             else:
-                raise "UnknownController: %s" % self.ControllerType
+                raise RuntimeError("UnknownController: %s" % self.ControllerType)
         except Exception, e:
             PyTango.Except.throw_exception("BakeoutControlDS_initDeviceException", str(e), str(e))
             self.modbus = self._serial = None
@@ -104,8 +104,8 @@ class BakeoutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".getProgramAttr()"
         
         data = self._programs.get(zone)        
-        dim_x = 3
-        dim_y = len(data) / 3    
+        dim_x = 4
+        dim_y = len(data) / 4    
         attr.set_value(data, dim_x, dim_y)   
 
 #===============================================================================
@@ -116,7 +116,7 @@ class BakeoutControlDS(PyTango.Device_3Impl):
         
         data = []
         attr.get_write_value(data)
-        if ( len(data) == 0 or len(data) %3 != 0 ): raise "DataLengthException"
+        if ( len(data) == 0 or len(data) % 4 != 0 ): raise ValueError
         self._programs[zone] = data
     
 #===============================================================================
@@ -144,13 +144,13 @@ class BakeoutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".getTemperatureAttr()"
         
         if ( self.ControllerType.lower() == "eurotherm" ):
-            raise "NotImplemented"        
+            raise NotImplementedError        
         elif ( self.ControllerType.lower() == "elotech" ):
             device = 1
             instruction = ELOTECH_ISTR.get("SEND")
             code = ELOTECH_PARAM.get("TEMP")
         else:
-            raise "UnknownController: %s" % self.ControllerType
+            raise RuntimeError("UnknownController: %s" % self.ControllerType)
         
         ans = self.SendCommand([device, zone, instruction, code])
         if ( ans ):
@@ -170,7 +170,7 @@ class BakeoutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".read_Pressure()"
 
         if ( not self.pressureAttr ):
-            raise "WrongPressureAttribute(%s)" % (hasattr(self, "PressureAttribute") and str(self.PressureAttribute) or "")
+            raise RuntimeError("WrongPressureAttribute: %s" % (hasattr(self, "PressureAttribute") and str(self.PressureAttribute) or ""))
         
         self._pressureTime = time.time()
         self._pressureVal = self.GetPressure()
@@ -491,7 +491,7 @@ class BakeoutControlDS(PyTango.Device_3Impl):
                 ans = self.read_Temperature_All()
             else:
                 ans = self._temps.values()
-            self._tempMax = max([value for value in ans if value != 1200.0])
+            self._tempMax = max([value for value in ans if value != TEMP_ERROR0])
         else:
             raise "UnknownController: %s" % self.ControllerType            
         attr.set_value(self._tempMax)
@@ -618,49 +618,53 @@ class BakeoutControlDS(PyTango.Device_3Impl):
     def SendCommand(self, command):
         print "In " + self.get_name() + ".SendCommand()"
         
-        if ( self.ControllerType.lower() == "eurotherm" ):
-            reply = str(self.modbus.ReadHoldingRegisters([int(command[0]), int(command[1])])[0])
-            print "\tRecv MODBUS: %s" % reply
-        elif ( self.ControllerType.lower() == "elotech" ):
-            if ( len(command) < 4 ):
-                raise "NotEnoughArguments"
-            elif ( len(command) > 5 ):
-                raise "TooManyArguments"
+        self._sLock.acquire()
+        try:
+            if ( self.ControllerType.lower() == "eurotherm" ):
+                reply = str(self.modbus.ReadHoldingRegisters([int(command[0]), int(command[1])])[0])
+                print "\tRecv MODBUS: %s" % reply
+            elif ( self.ControllerType.lower() == "elotech" ):
+                if ( len(command) < 4 ):
+                    raise ValueError
+                elif ( len(command) > 5 ):
+                    raise ValueError
+                else:
+                    package = []
+                    for i in range(len(command)):
+                        if ( i < 2 ):
+                            command[i] = ["%02x" % int(command[i])]
+                        elif ( i < 4 ):
+                            command[i] = [command[i]]
+                        elif ( i == 4 ):
+                            command[i] = self.elotech_value(command[i])
+                        package.extend(command[i])            
+                    package.append(self.elotech_checksum(package))
+                    scmd = "\n" + "".join(package) + "\r"
+                    print "\tSend block: %s" % scmd.strip()
+                    
+                    replies = 2
+                    while ( replies > 0 ):
+                        self._serial.write(scmd)
+                        ans = self.listen()
+                        if ( not ans ):
+                            replies -= 1
+                        elif ( ans[7:9] in ELOTECH_ERROR.keys() ): 
+                            print "\tRecv block: %s" % ans.strip()                        
+                            print "\t" + ELOTECH_ERROR.get(ans[7:9])
+                            ans = ""
+                            break
+                        else:
+                            print "\tRecv block: %s" % ans.strip()
+                            print "\tAck: Command executed"
+                            break
+                        Event().wait(.1)
+                    reply = str(ans)
             else:
-                package = []
-                for i in range(len(command)):
-                    if ( i < 2 ):
-                        command[i] = ["%02x" % int(command[i])]
-                    elif ( i < 4 ):
-                        command[i] = [command[i]]
-                    elif ( i == 4 ):
-                        command[i] = self.elotech_value(command[i])
-                    package.extend(command[i])            
-                package.append(self.elotech_checksum(package))
-                scmd = "\n" + "".join(package) + "\r"
-                print "\tSend block: %s" % scmd.strip()
-                
-                replies = 2
-                while ( replies > 0 ):
-                    self._serial.write(scmd)
-                    ans = self.listen()
-                    if ( not ans ):
-                        replies -= 1
-                    elif ( ans[7:9] in ELOTECH_ERROR.keys() ): 
-                        print "\tRecv block: %s" % ans.strip()                        
-                        print "\t" + ELOTECH_ERROR.get(ans[7:9])
-                        ans = ""
-                        break
-                    else:
-                        print "\tRecv block: %s" % ans.strip()
-                        print "\tAck: Command executed"
-                        break
-                    Event().wait(.1)
-                reply = str(ans)
-        else:
-            raise "UnknownController: %s" % self.ControllerType 
-        
-        return reply
+                raise RuntimeError("UnknownController: %s" % self.ControllerType) 
+            
+            return reply
+        finally:
+            self._sLock.release()
 
 #===============================================================================
 # Start command:
@@ -668,14 +672,10 @@ class BakeoutControlDS(PyTango.Device_3Impl):
     def Start(self, zone):
         print "In " + self.get_name() + ".Start()"
 
-        if ( self._programs.get(zone) == NO_PROGRAM ):
-            print "\tErr: No program to run"        
-        elif ( not self._c.isAlive(zone) ):
-            self._pTimes[zone] = time.time()
-            self._pTemps[zone] = self.getTemperatureAttr(zone)
+        if ( not self._c.isAlive(zone) ):
             self._q.put((zone, COMMAND.get("START")))
         else:
-            print "\tErr: Program running (stop first)"
+            print "\tErr: Program running (stop it first)"
 
 #===============================================================================
 # Stop command:
@@ -684,14 +684,12 @@ class BakeoutControlDS(PyTango.Device_3Impl):
         print "In " + self.get_name() + ".Stop()"
         
         if ( self._c.isAlive(zone) ):
-            for zn in (zone and [zone] or range(1, self._noZones + 1)):        
-                self._pTemps[zn] = self._pTimes[zn] = 0.
             self._q.put((zone, COMMAND.get("STOP")))
         else:
             if ( zone ):
-                print "\tErr: Program stopped (start first)"
+                print "\tErr: Program stopped (start it first)"
             else:
-                print "\tErr: All programs stopped (start first)"            
+                print "\tErr: All programs stopped (start one first)"            
 
 #===============================================================================
 # Getters and setters
@@ -701,6 +699,24 @@ class BakeoutControlDS(PyTango.Device_3Impl):
  
     def getProgram(self, zone):
         return self._programs.get(zone)
+    
+    def setProgramStartTempTime(self, zones):
+        try:
+            for zone in zones:
+                self._pTemps[zone] = self.getTemperatureAttr(zone)
+                self._pTimes[zone] = time.time()
+        except TypeError:
+            for zone in (zones and (zones,) or range(1, self._noZones + 1)):
+                self._pTemps[zone] = self.getTemperatureAttr(zone)
+                self._pTimes[zone] = time.time()
+                
+    def setProgramStopTempTime(self, zones):
+        try:
+            for zone in zones:
+                self._pTemps[zone] = self._pTimes[zone] = 0.
+        except TypeError:
+            for zone in (zones and (zones,) or range(1, self._noZones + 1)):
+                self._pTemps[zone] = self._pTimes[zone] = 0.                
             
 #===============================================================================
 # BakeoutControlDS other methods
@@ -751,7 +767,7 @@ class BakeoutControlDS(PyTango.Device_3Impl):
         return mantissa[:2], mantissa[-2:], exponent    
   
     def int2bin(self, n, count=8):
-        return "".join([str((n >> y) & 1) for y in range(count -1, -1, -1)])
+        return "".join([str((n >> y) & 1) for y in range(count - 1, -1, -1)])
        
     def update_properties(self, property_list = []):
         property_list = property_list or self.get_device_class().device_property_list.keys()
@@ -828,35 +844,35 @@ class BakeoutControlDSClass(PyTango.PyDeviceClass):
         "Program_Zone1":
             [[PyTango.DevDouble, 
             PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3 , 64]], 
+            PyTango.READ_WRITE, 4, 64]], 
         "Program_Zone2":
             [[PyTango.DevDouble, 
             PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3 , 64]], 
+            PyTango.READ_WRITE, 4, 64]], 
         "Program_Zone3":
             [[PyTango.DevDouble, 
             PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3 , 64]], 
+            PyTango.READ_WRITE, 4, 64]], 
         "Program_Zone4":
             [[PyTango.DevDouble, 
             PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3 , 64]], 
+            PyTango.READ_WRITE, 4, 64]], 
         "Program_Zone5":
             [[PyTango.DevDouble, 
             PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3 , 64]], 
+            PyTango.READ_WRITE, 4, 64]], 
         "Program_Zone6":
             [[PyTango.DevDouble, 
             PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3 , 64]], 
+            PyTango.READ_WRITE, 4, 64]], 
         "Program_Zone7":
             [[PyTango.DevDouble, 
             PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3 , 64]], 
+            PyTango.READ_WRITE, 4, 64]], 
         "Program_Zone8":
             [[PyTango.DevDouble, 
             PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3 , 64]],
+            PyTango.READ_WRITE, 4, 64]],
        "Program_Temp_Zone1":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
