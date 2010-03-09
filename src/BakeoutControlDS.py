@@ -947,11 +947,9 @@ class BakeoutControlDS(PyTango.Device_3Impl):
 #------------------------------------------------------------ BakeoutControlDS()
               
 class BakeoutControlDSClass(PyTango.PyDeviceClass):
-# Class Properties
     class_property_list = {
         }
 
-# Device Properties
     device_property_list = {
         "ControllerType":
             [PyTango.DevString, 
@@ -975,7 +973,6 @@ class BakeoutControlDSClass(PyTango.PyDeviceClass):
             [ 250 ] ], 	    
         }
 
-# Command definitions
     cmd_list = {
         "Reset":
             [[PyTango.DevVoid, "Returns to initial state, forgets last alarm"], 
@@ -994,7 +991,6 @@ class BakeoutControlDSClass(PyTango.PyDeviceClass):
              [PyTango.DevVoid, ""]]             
         }
 
-# Attribute definitions
     attr_list = {
         "Output_1":
             [[PyTango.DevShort, 
@@ -1210,19 +1206,15 @@ class BakeoutControlDSClass(PyTango.PyDeviceClass):
             PyTango.READ]]           
         }
 
-#===============================================================================
-# BakeoutControlDSClass Constructor
-#===============================================================================
     def __init__(self, name):
         PyTango.PyDeviceClass.__init__(self, name)
         self.set_type(name);
         print "In BakeoutControlDSClass constructor"
 
-#===============================================================================
-# 
-# BakeoutControlDS class main method
-#
-#===============================================================================
+    #---------------------------------------------------------------- __init__()
+ 
+#------------------------------------------------------- BakeoutControlDSClass()
+    
 if __name__ == "__main__":
     try:
         py = PyTango.PyUtil(sys.argv)
