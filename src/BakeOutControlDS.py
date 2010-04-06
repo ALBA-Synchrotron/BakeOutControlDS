@@ -1412,6 +1412,8 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                 raise Exception("UnknownController: %s" % self.ControllerType) 
             
             return reply
+        except Exception,e:
+            print ('Exception in %s.SendCommand: %s' % (self.get_name(),str(e)))
         finally:
             self._sndCmdLock.release()
             
