@@ -32,7 +32,10 @@ import time
 from decimal import Decimal
 from threading import Event, Lock
 from Queue import Queue
-from tau.core.utils import Enumeration
+try:
+    from tau.core.utils import Enumeration
+except:
+    from PyTango_utils.dicts import Enumeration
 
 TEMP_ROOM = 25.
 TEMP_DEFAULT = 1200.
