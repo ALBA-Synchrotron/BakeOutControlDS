@@ -1284,6 +1284,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                         self.set_state(PyTango.DevState.DISABLE)
                         break
                     replies -= 1
+                    Event().wait(.01)
                 if ( not replies ):
                     self.set_state(PyTango.DevState.ALARM)
                         
@@ -1544,7 +1545,7 @@ class Controller(threading.Thread):
                     self.setStepper(programNo, None)
                 self.event(programNo).set()
             self.queue().task_done()
-            
+            Event().wait(.01)
 #    run()
 
     def setProgram(self, programNo, program):
