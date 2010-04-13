@@ -1403,12 +1403,17 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                     print "\tSend block: %s" % sndCmd.strip()
                     self.serial().write(sndCmd)
                     ans = self.listen()
+                    self.serial().flush() ##Needed to avoid errors parsing outdated strings!
                     if ( ans ):
                         try:
-                            print "\tRecv block: %s" % ans.strip()                                 
-                            raise Exception(ElotechError.whatis(int(ans[7:9], 16)))                            
+                            print "\tRecv block: %s" % ans.strip()
+                            raise Exception(ElotechError.whatis(int(ans[7:9], 16))) ##It will raise KeyError if no error is found
                         except KeyError:
-                            pass
+                            pass ##No errors, so we continue ...
+                        #if ans[-2:]!=self.elotech_checksum(ans[:-2]): #Checksum calcullation may not match with expected one
+                            #raise Exception('ChecksumFailed! %s!=%s'%(ans[-2:],self.elotech_checksum(ans[:-2])))
+                        if sndCmd[:4]!=ans[:4]:
+                            raise Exception('AnswerDontMatchZone! %s!=%s'%(ans[:4],sndCmd[:4]))
                     else:
                         raise Exception("ConnectionError")
                     reply = str(ans)
