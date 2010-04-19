@@ -25,6 +25,11 @@
 #
 
 import PyTango
+if 'PyUtil' not in dir(PyTango): #For PyTango7-3 backward compatibility
+    PyTango.PyUtil = PyTango.Util
+    PyTango.PyDeviceClass = PyTango.DeviceClass
+    PyTango.Device_3Impl = PyTango.Device_4Impl
+
 import serial
 import sys
 import threading
