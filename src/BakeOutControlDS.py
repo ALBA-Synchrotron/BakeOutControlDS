@@ -42,6 +42,7 @@ try:
 except:
     from PyTango_utils.dicts import Enumeration
 
+MAX_ERRORS = 5
 TEMP_ROOM = 25.
 TEMP_DEFAULT = 1200.
 PROGRAM_DEFAULT = list([TEMP_DEFAULT, 0., -1.])
@@ -112,7 +113,7 @@ ControllerCommand = Enumeration(
 #
 #    DevState.OFF :
 #    DevState.DISABLE :
-#    DevState.FAULT :
+#    DevState.UNKNOWN :
 #    DevState.ALARM :
 #    DevState.ON :
 #
@@ -391,7 +392,8 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         if ( ans ):
             data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
         else:
-            data = TEMP_DEFAULT
+            #data = TEMP_DEFAULT
+            raise Exception,'DataNotReceived'
         
         self.setTemperature(zone, data)
         
@@ -521,7 +523,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
             if ( self.ControllerType.lower() == "eurotherm" ):
                 self.modbus().ping()  
         except:
-            self.set_state(PyTango.DevState.FAULT)
+            self.set_state(PyTango.DevState.UNKNOWN)
             
 #    always_executed_hook()
 
@@ -1288,7 +1290,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                 replies = 3
                 while ( replies ):
                     self.CheckStatus()
-                    if ( self.get_state() == PyTango.DevState.ON ):
+                    if ( self.get_state() != PyTango.DevState.ON ):
                         self.set_state(PyTango.DevState.DISABLE)
                         break
                     replies -= 1
@@ -1310,6 +1312,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
 #------------------------------------------------------------------------------ 
     def CheckStatus(self):
         print "In " + self.get_name() + ".CheckStatus()"
+        error_count = 0
         
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError
@@ -1322,6 +1325,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                 ans = self.SendCommand([device, zone, instruction, code])
                 if ( ans ):
                     status[zone - 1] = [bool(int(ans[11:13])), False, 0]
+                else: error_count+=1
             for programNo in range(1, self.zoneCount() + 1):
                 params = self.params(programNo)
                 for zone in self.zones(programNo):
@@ -1352,7 +1356,9 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                         alarm = True
                 statusStr += "\n"
         
-        if ( alarm ):
+        if (error_count>MAX_ERRORS):
+            self.set_state(PyTango.DevState.UNKNOWN)
+        elif ( alarm ):
             self.set_state(PyTango.DevState.ALARM)
         else:
             if ( any(st[0] for st in status) ):
