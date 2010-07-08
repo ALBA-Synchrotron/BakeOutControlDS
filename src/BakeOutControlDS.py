@@ -1423,8 +1423,8 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                             pass ##No errors, so we continue ...
                         #if ans[-2:]!=self.elotech_checksum(ans[:-2]): #Checksum calcullation may not match with expected one
                             #raise Exception('ChecksumFailed! %s!=%s'%(ans[-2:],self.elotech_checksum(ans[:-2])))
-                        if sndCmd[:4]!=ans[:4]:
-                            raise Exception('AnswerDontMatchZone! %s!=%s'%(ans[:4],sndCmd[:4]))
+                        if sndCmd.strip()[:4]!=ans.strip()[:4]:
+                            raise Exception('AnswerDontMatchZone! %s!=%s'%(ans.strip()[:4],sndCmd.strip()[:4]))
                     else:
                         raise Exception("ConnectionError")
                     reply = str(ans)
