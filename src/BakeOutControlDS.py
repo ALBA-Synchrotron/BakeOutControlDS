@@ -481,8 +481,11 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         self._tempAllTime = long(0)
         
         try: 
+            print 'PressureAttribute: %s'%self.PressureAttribute
             self.pressureAttr = PyTango.AttributeProxy(self.PressureAttribute)
         except Exception: 
+            import traceback
+            print traceback.format_exc()
             self.pressureAttr = None
             raise Exception("PressureAttributeProxyError")
         try:
@@ -490,6 +493,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                 print "\tUsing an eurotherm controller..."
                 self._modbus = PyTango.DeviceProxy(self.CommsDevice)
                 self._modbus.ping()
+                self._temps = {}
             elif ( self.ControllerType.lower() == "elotech" ):
                 print "\tUsing an elotech controller..."
                 self.init_serial()
@@ -1207,7 +1211,8 @@ class BakeOutControlDS(PyTango.Device_3Impl):
     def read_Temperature_All(self, attr=None):
         print "In " + self.get_name() + ".read_Temperature_All()"
         if ( self.ControllerType.lower() == "eurotherm" ):
-            data = float(self.modbus().ReadHoldingRegisters([1, 1])[0])
+            #data = float(self.modbus().ReadHoldingRegisters([1, 1])[0])
+            data = list(self.modbus().ReadHoldingRegisters([1, 1]))
 #            print "Recv MODBUS: %s" % data
         elif ( self.ControllerType.lower() == "elotech" ):
             data = []                        
@@ -1234,7 +1239,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
     def read_Temperature_Max(self, attr):
         print "In " + self.get_name() + ".read_Temperature_Max()"
         if ( self.ControllerType.lower() == "eurotherm" ):
-            self.setTempMax(self.read_Temperature_All())
+            self.setTempMax((self.read_Temperature_All() or [-1])[0])
         elif ( self.ControllerType.lower() == "elotech" ):
             if ( self.tempAllTime() < long(time.time()) - 60 ):
                 ans = self.read_Temperature_All()
@@ -1296,7 +1301,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                     replies -= 1
                     Event().wait(.01)
                 if ( not replies ):
-                    self.set_state(PyTango.DevState.ALARM)
+                    self.set_state(PyTango.DevState.FAULT)
                         
             return value
         except Exception:
@@ -1317,7 +1322,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError
         elif ( self.ControllerType.lower() == "elotech" ):
-            status = [False]*self.zoneCount()
+            status = [[False,False,False]]*self.zoneCount()
             device = 1
             instruction = "%02X" % ElotechInstruction.SEND
             code = "%02X" % ElotechParameter.ZONE_ON_OFF
@@ -1779,10 +1784,16 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
     cmd_list = {
         "CheckPressure":
             [[PyTango.DevVoid, ""], 
-            [PyTango.DevDouble, ""]],
+            [PyTango.DevDouble, ""],
+            {
+                'Polling period':15000,
+            } ],  
         "CheckStatus":
             [[PyTango.DevVoid, ""], 
-            [PyTango.DevString, ""]],  
+            [PyTango.DevString, ""],
+            {
+                'Polling period':15000,
+            } ],  
         "Reset":
             [[PyTango.DevVoid, ""], 
             [PyTango.DevVoid, ""]], 
