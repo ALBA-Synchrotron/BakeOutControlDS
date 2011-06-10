@@ -391,8 +391,10 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         ans = self.SendCommand([device, zone, instruction, code])
         if ( ans ):
             data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+            if data: self.error_count = 0
         else:
             #data = TEMP_DEFAULT
+            self.error_count+=1
             raise Exception,'DataNotReceived'
         
         self.setTemperature(zone, data)
@@ -470,6 +472,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         self.set_state(PyTango.DevState.ON)
         self.get_device_properties(self.get_device_class())
         self.update_properties()
+        self.error_count = 0
         self._zoneCount = 1
         self._programs = None
         self._pParams = None
@@ -526,7 +529,13 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         try:
             if ( self.ControllerType.lower() == "eurotherm" ):
                 self.modbus().ping()  
+            if (self.error_count>MAX_ERRORS):
+                self.set_state(PyTango.DevState.UNKNOWN)
+            if self.error_count<=0 and self.get_state()==PyTango.DevState.UNKNOWN:
+                self.set_state(PyTango.DevState.ON)
         except:
+            print 'Exception in always_executed_hook():'
+            print traceback.format_exc()
             self.set_state(PyTango.DevState.UNKNOWN)
             
 #    always_executed_hook()
@@ -1317,7 +1326,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
 #------------------------------------------------------------------------------ 
     def CheckStatus(self):
         print "In " + self.get_name() + ".CheckStatus()"
-        error_count = 0
+        self.error_count = 0
         
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError
@@ -1361,7 +1370,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
                         alarm = True
                 statusStr += "\n"
         
-        if (error_count>MAX_ERRORS):
+        if (self.error_count>MAX_ERRORS):
             self.set_state(PyTango.DevState.UNKNOWN)
         elif ( alarm ):
             self.set_state(PyTango.DevState.ALARM)
