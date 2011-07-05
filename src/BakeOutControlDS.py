@@ -118,6 +118,7 @@ ControllerCommand = Enumeration(
 #    DevState.ON :
 #
 #===============================================================================
+
 class BakeOutControlDS(PyTango.Device_3Impl):
     _sndCmdLock = Lock()
 
@@ -339,39 +340,10 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         
 #    setSerial()
 
-    def setTempAllTime(self):
-        self._tempAllTime = long(time.time())
-        
-#    setTempAllTime()
-  
-    def setTemperature(self, key, value):
-        self._temps[key] = value
-        
-#    setTemperature()
+#------------------------------------------------------------------------------
+""" Methods to manage temperatures
+"""
 
-    def setTempMax(self, tempMax):
-        self._tempMax = tempMax
-        
-#    setTempMax()
-
-    def setZones(self, key, value):
-        self._pZones[key] = value
-    
-#    setZones()
- 
-    def setZonesAttr(self, programNo, attr):
-        print "In " + self.get_name() + ".setZonesAttr()"
-        data = []
-        attr.get_write_value(data)
-        dataSet = set(data)
-        dataSet.intersection_update(i for i in range(1, self.zoneCount() + 1))
-        for otherSet in [self.zones(pNo) for pNo in range(1, self.zoneCount() + 1) if pNo != programNo]:
-            if ( dataSet.intersection(otherSet) ):
-                dataSet.difference_update(otherSet)
-        self.setZones(programNo, sorted(dataSet))
-        
-#    setZonesAttr()
- 
     def tempAllTime(self):
         return self._tempAllTime
     
@@ -415,6 +387,64 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         return self._tempMax
     
 #    tempMax()
+
+    def setTempAllTime(self):
+        self._tempAllTime = long(time.time())
+        
+#    setTempAllTime()
+  
+    def setTemperature(self, key, value):
+        self._temps[key] = value
+        
+#    setTemperature()
+
+    def setTempMax(self, tempMax):
+        self._tempMax = tempMax
+        
+#    setTempMax()
+
+
+#------------------------------------------------------------------------------
+""" Methods to manage the Zones dictionary
+Zones = dict(int:[]); keeps the zones managed by each program
+"""
+
+    def zoneCount(self):
+        return self._zoneCount
+    
+#    zoneCount()
+        
+    def zones(self, key):
+        return self._pZones.get(key)
+    
+#    zones()
+        
+    def setZones(self, key, value):
+        self._pZones[key] = value
+    
+#    setZones()
+ 
+     def zonesAttr(self, programNo, attr):
+        print "In " + self.get_name() + ".zonesAttr()"
+        data = self.zones(programNo)        
+        attr.set_value(data)
+    
+#    zonesAttr()
+
+    def setZonesAttr(self, programNo, attr):
+        print "In " + self.get_name() + ".setZonesAttr()"
+        data = []
+        attr.get_write_value(data)
+        dataSet = set(data)
+        dataSet.intersection_update(i for i in range(1, self.zoneCount() + 1))
+        for otherSet in [self.zones(pNo) for pNo in range(1, self.zoneCount() + 1) if pNo != programNo]:
+            if ( dataSet.intersection(otherSet) ):
+                dataSet.difference_update(otherSet)
+        self.setZones(programNo, sorted(dataSet))
+        
+#    setZonesAttr()
+
+#------------------------------------------------------------------------------
  
     def update_properties(self, property_list=[]):
         property_list = property_list or self.get_device_class().device_property_list.keys()
@@ -426,23 +456,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
             self.db.put_device_property(self.get_name(), {key:isinstance(value, list) and value or [value]})
             
 #    update_properties()
-       
-    def zoneCount(self):
-        return self._zoneCount
-    
-#    zoneCount()
-        
-    def zones(self, key):
-        return self._pZones.get(key)
-    
-#    zones()
-        
-    def zonesAttr(self, programNo, attr):
-        print "In " + self.get_name() + ".zonesAttr()"
-        data = self.zones(programNo)        
-        attr.set_value(data)
-    
-#    zonesAttr()
+
       
 #------------------------------------------------------------------------------ 
 #    Device constructor
@@ -1343,7 +1357,7 @@ class BakeOutControlDS(PyTango.Device_3Impl):
             for programNo in range(1, self.zoneCount() + 1):
                 params = self.params(programNo)
                 for zone in self.zones(programNo):
-                    status[zone - 1][1] = bool(params[1] and not params[3])                 
+                    status[zone - 1][1] = bool(params[1] and not params[3])
                     status[zone - 1][2] = programNo
             
             alarm = False
