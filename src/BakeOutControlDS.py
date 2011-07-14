@@ -24,6 +24,7 @@
 #               www.cells.es, Barcelona
 #
 
+import fandango
 import PyTango
 if 'PyUtil' not in dir(PyTango): #For PyTango7-3 backward compatibility
     PyTango.PyUtil = PyTango.Util
@@ -36,55 +37,10 @@ import threading
 import time
 from decimal import Decimal
 from threading import Event, Lock
-from Queue import Queue
-try:
-    from tau.core.utils import Enumeration
-except:
-    from PyTango_utils.dicts import Enumeration
+
+from ElotechStepper import *
 
 MAX_ERRORS = 5
-TEMP_ROOM = 25.
-TEMP_DEFAULT = 1200.
-PROGRAM_DEFAULT = list([TEMP_DEFAULT, 0., -1.])
-PARAMS_DEFAULT = list([TEMP_DEFAULT, 0., 0., 0.])
-
-ElotechInstruction = Enumeration(
-"ElotechInstruction", (
-    ("SEND", int("10", 16)),
-    ("SEND_GROUP", int("15", 16)),
-    ("ACPT", int("20", 16)),
-    ("ACPT_SAVE", int("21", 16))    
-))
-
-ElotechParameter = Enumeration(
-"ElotechParameter", (
-    ("TEMP", int("10", 16)),
-    ("SETPOINT", int("21", 16)),
-    ("RAMP", int("2F", 16)),
-    ("OUTPUT", int("60", 16)),
-    ("OUTPUT_LIMIT", int("64", 16)),
-    ("ZONE_ON_OFF", int("8F", 16))              
-))
-
-ElotechError = Enumeration(
-"ElotechError", (
-    ("ParityError", int("01", 16)),
-    ("ChecksumError", int("02", 16)),
-    ("ProcedureError", int("03", 16)),
-    ("NonComplianceError", int("04", 16)),
-    ("ZoneNumberError", int("05", 16)),
-    ("ParameterReadOnlyError", int("06", 16)),
-    ("PowerfailSaveError", int("FE", 16)),
-    ("GeneralError", int("FF", 16))    
-))
-
-ControllerCommand = Enumeration(
-"ControllerCommand", (
-    "STOP",
-    "START",
-    "PAUSE",
-    "FEED"
-))
 
 #===============================================================================
 # BakeOutControllDS Class Description
@@ -119,23 +75,49 @@ ControllerCommand = Enumeration(
 #
 #===============================================================================
 
-class BakeOutControlDS(PyTango.Device_3Impl):
-    _sndCmdLock = Lock()
+class BakeOutControlDS(PyTango.Device_4Impl):
+    """
+    Wiki available at http://redmine.cells.es/wiki/frontendbk/BakeOutControl
 
+    This documentation matches the 4th release of the BakeOutControlDS, which has been modified to use dynamic attributes and be thread-safe.
+    
+    To do so a _dyn-attr()_ method replaced the previous read_?_N methods for *_Outputs, Programs, Zones,_* ... In this dyn_attr method can be verified the types of the attributes. Although the most important are:
+    
+    * Temperature_X: Temperature measured on each thermocouple
+    * Output_X: Actual output value for a channel
+    * Output_X_Limit: Max output allowed, RW
+    
+    * Program_X: A 3x64 RW image containing rows of *temperature,ramp,time* tuples. (temperature==1200 is used means not-initialized value).
+    * Program_X_Params: This 4 values array returns the *startTemperature,startTime,pauseTime,finishTime* for every program (any value==0 means not initialized yet).
+    * Program_X_Zones: An array containing the zones assigned to each program (numbers from 1 to 8).
+    
+    The Programs and Zones are set by the GUI, but Program Params are modified only by the device server. startTemperature is used to adjust the ramping time; startTime and finishTime are used to store when the program started and if it already finished; pauseTime is actually not used (although may be used once the Pause() command will be added).
+    
+    The Controller and Stepper classes are threads, which has been modified to catch unexpected exceptions and show them as Status of the BakeOutControlDS (with state==FAULT). The Stepper will try to configure Temperature and Ramp before enabling the Zone outputs. The Ramp and Temperature will be resent every minute.
+    
+    h2. State Machine
+    
+    * UNKNOWN: More than MAX_ERRORS communication errors received
+    * OFF: None of the Zones is active
+    * ON: Some Zones active, no programs running.
+    * RUNNING: Zones active and programmed.
+    * ALARM: Zones programmed but not running.
+    * DISABLE: The Zones have been deactivated due to a Pressure interlock.
+    * FAULT: An unexpected exception occurred.
+
+    CheckPressure polling is needed to trigger Pressure interlocks.
+    CheckStatus polling is needed to keep State and Status fields up to date.
+    """
     def checksum(self, x, y):
         res = 256 - x - y - 32
         while ( res <= 0 ): res += 256
         
         return "%02X" % res
     
-#    checksum()
-
     def controller(self):
         if ( self._c ):
             return self._c
         raise AttributeError
-        
-#    controller()
         
     def elotech_checksum(self, args):
         res = 256 - sum([int(i, 16) for i in args])
@@ -143,8 +125,6 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         
         return "%02X" % res
     
-#    elotech_checksum()
-     
     def elotech_value(self, value):
         v = Decimal(str(value))
         v = v.as_tuple()
@@ -153,9 +133,8 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         
         return mantissa[:2], mantissa[-2:], exponent 
     
-#    elotech_value()
- 
     def init_serial(self):
+        self.serialLock.acquire()
         if ( hasattr(self, "_serial") and self._serial ): 
             self.serial().close()
         self._serial = serial.Serial()
@@ -167,69 +146,60 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         self._serial.port = self.CommsDevice
         self._serial.xonxoff = 0
         self._serial.rtscts = 0
+        self._serial.open()
+        self.serialLock.release()
         
-        
-#    init_serial()
- 
     def int2bin(self, n, count=8):
         return "".join([str((n >> y) & 1) for y in range(count - 1, -1, -1)])
     
-#    int2bin()
-
-    def limitAttr(self, zone, attr):
-        print "In " + self.get_name() + ".limitAttr()"      
-        if ( self.ControllerType.lower() == "eurotherm" ):
-            raise NotImplementedError        
-        elif ( self.ControllerType.lower() == "elotech" ):
-            device = 1
-            instruction = "%02X" % ElotechInstruction.SEND 
-            code = "%02X" % ElotechParameter.OUTPUT_LIMIT
-        else:
-            raise Exception("UnknownController: %s" % self.ControllerType)
-        ans = self.SendCommand([device, zone, instruction, code])
-        if ( ans ):
-            data = int(ans[9:13], 16)
-        else:
-            data = 100
-        
-        attr.set_value(data)
-        
-#    limitAttr()
-            
     def listen(self):
+        retries,waittime = 5,1e-3*self.Timeout
         sleeper = Event()
-        sleeper.wait(.05)        
+        sleeper.wait(waittime/retries)
         s = self.serial().readline()
         if ( not s ):
-            ts = 5 
+            ts = retries
             while ( not s and ts ):
-                sleeper.wait(.05)
+                sleeper.wait(waittime/retries)
                 s = self.serial().readline()
                 ts -= 1
         s += self.serial().readline()
         
         return s
     
-#    listen()
-
     def modbus(self):
         if ( self._modbus ):
             return self._modbus
         raise AttributeError
     
-#    modbus()
+    def queue(self):
+        if ( self._q ):
+            return self._q
+        raise AttributeError
   
+    def setSerial(self, serial):
+        self._serial = serial
+
+    def serial(self):
+        if ( self._serial ):
+            return self._serial
+        raise AttributeError
+    
+    ###########################################################################
+    # Ouputs and Limits attributes
+
     def outputAttr(self, zone, attr):
-        print "In " + self.get_name() + ".outputAttr()"        
+        if self.Trace: print "In " + self.get_name() + ".outputAttr(%s)"%zone
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError        
         elif ( self.ControllerType.lower() == "elotech" ):
             device = 1
             instruction = "%02X" % ElotechInstruction.SEND
             code = "%02X" % ElotechParameter.OUTPUT
+            if self.Trace: print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
-        ans = self.SendCommand([device, zone, instruction, code])
+        ans = self.threadDict.get((device, zone, instruction, code))
         if ( ans ):
             data = int(ans[9:13], 16)
         else:
@@ -239,56 +209,28 @@ class BakeOutControlDS(PyTango.Device_3Impl):
             attr.set_value_date_quality(data, time.time(), PyTango.AttrQuality.ATTR_CHANGING)
         else:
             attr.set_value(data)
+            
+    def limitAttr(self, zone, attr):
+        if self.Trace: print "In " + self.get_name() + ".limitAttr(%s)"%zone
+        if ( self.ControllerType.lower() == "eurotherm" ):
+            raise NotImplementedError        
+        elif ( self.ControllerType.lower() == "elotech" ):
+            device = 1
+            instruction = "%02X" % ElotechInstruction.SEND 
+            code = "%02X" % ElotechParameter.OUTPUT_LIMIT
+            if self.Trace: print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
+        else:
+            raise Exception("UnknownController: %s" % self.ControllerType)
+        ans = self.threadDict.get((device, zone, instruction, code))
+        if ( ans ):
+            data = int(ans[9:13], 16)
+        else:
+            data = 100
         
-#    outputAttr()
- 
-    def params(self, key):
-        return self._pParams.get(key)
-                
-#    params()
-      
-    def paramsAttr(self, programNo, attr):
-        print "In " + self.get_name() + ".paramsAttr()"
-        data = self.params(programNo)
         attr.set_value(data)
         
-#    paramsAttr()
-
-    def pressure(self):
-        return self._pressure
-    
-#    pressure()
-  
-    def program(self, key):
-        return self._programs.get(key)
-    
-#    program()
- 
-    def programAttr(self, programNo, attr):
-        print "In " + self.get_name() + ".programAttr()"
-        data = self.program(programNo)        
-        dim_x = 3
-        dim_y = len(data) / 3    
-        attr.set_value(data, dim_x, dim_y)
-        
-#    programAttr()
-        
-    def queue(self):
-        if ( self._q ):
-            return self._q
-        raise AttributeError
-    
-#    queue()
- 
-    def serial(self):
-        if ( self._serial ):
-            return self._serial
-        raise AttributeError
-    
-#    serial()
-   
     def setLimitAttr(self, zone, attr):
-        print "In " + self.get_name() + ".setLimitAttr()"          
+        if self.Trace: print "In " + self.get_name() + ".setLimitAttr(%s)"%zone
         data = []
         attr.get_write_value(data)
         if ( self.ControllerType.lower() == "eurotherm" ):
@@ -297,70 +239,31 @@ class BakeOutControlDS(PyTango.Device_3Impl):
             device = 1
             instruction = "%02X" % ElotechInstruction.ACPT
             code = "%02X" % ElotechParameter.OUTPUT_LIMIT
+            if self.Trace: print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
             value = data[0]
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
         self.SendCommand([device, zone, instruction, code, value])
         
-#    setLimitAttr()
-  
-    def setParams(self, key, value):
-        self._pParams[key] = value
-        
-#    setParams()
-
-    def setPressure(self, pressure):
-        self._pressure = pressure
-        
-#    setPressure()
-
-    def setPressureTime(self):
-        self._pressureTime = long(time.time())
-        
-#    setPressureTime()
-
-    def setProgram(self, key, value):
-        self._programs[key] = value
-    
-#    setProgram()    
-
-    def setProgramAttr(self, programNo, attr):
-        print "In " + self.get_name() + ".setProgramAttr()"
-        data = []
-        attr.get_write_value(data)
-        if ( len(data) == 0 or len(data) % 3 != 0 ):
-            raise ValueError
-        self.setProgram(programNo, data)
-        self.setParams(programNo, list(PARAMS_DEFAULT))
-        
-#    setProgramAttr()
-
-    def setSerial(self, serial):
-        self._serial = serial
-        
-#    setSerial()
-
-#------------------------------------------------------------------------------
-""" Methods to manage temperatures
-"""
+    ###########################################################################
+    # Methods to manage temperatures
 
     def tempAllTime(self):
         return self._tempAllTime
     
-#    tempAllTime()
-      
     def temperatureAttr(self, zone, attr=None):
-        print "In " + self.get_name() + ".temperatureAttr()"
+        if self.Trace: print "In " + self.get_name() + ".temperatureAttr(%s)"%zone
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError        
         elif ( self.ControllerType.lower() == "elotech" ):
             device = 1
             instruction = "%02X" % ElotechInstruction.SEND
             code = "%02X" % ElotechParameter.TEMP
+            if self.Trace: print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
         
-        ans = self.SendCommand([device, zone, instruction, code])
+        ans = self.threadDict.get((device, zone, instruction, code))
         if ( ans ):
             data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
             if data: self.error_count = 0
@@ -376,76 +279,113 @@ class BakeOutControlDS(PyTango.Device_3Impl):
         
         return data
     
-#    temperatureAttr()
-
     def temps(self):
-        return self._temps.values()
+        return [v[1] for v in self._temps.values()]
     
-#    temps()
-
     def tempMax(self):
         return self._tempMax
     
-#    tempMax()
-
     def setTempAllTime(self):
         self._tempAllTime = long(time.time())
         
-#    setTempAllTime()
-  
     def setTemperature(self, key, value):
-        self._temps[key] = value
+        self._temps[key] = (time.time(),value)
         
-#    setTemperature()
-
+    def temperatureSpAttr(self,zone,attr=None):
+        if ( self.ControllerType.lower() == "eurotherm" ):
+            raise NotImplementedError        
+        elif ( self.ControllerType.lower() == "elotech" ):
+            device,instruction,code = 1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.SETPOINT
+            if self.Trace:  print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
+        else:
+            raise Exception("UnknownController: %s" % self.ControllerType)
+        
+        ans = self.threadDict.get((device, zone, instruction, code))
+        if ( ans ): 
+            error_count,data = 0,float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+        else:
+            self.error_count+=1
+            raise Exception,'DataNotReceived'
+        if ( attr ): attr.set_value(data)
+        return data
+        
     def setTempMax(self, tempMax):
         self._tempMax = tempMax
+
+    ###########################################################################
+    # Methods to manage the Programming of bakeouts
+    # Zones = dict(int:[]); keeps the zones managed by each program
+
+    def update_program_properties(self):
+        try:
+            print '%s.update_program_properties(%s)'%(self.get_name(),self._programs.items())
+            PyTango.Util.instance().get_database().put_device_property(self.get_name(),{
+            'Programs':['%d:%s'%(i,','.join(str(f) for f in p)) for i,p in self._programs.items()],
+            'Params':['%d:%s'%(i,','.join(str(f) for f in p)) for i,p in self._pParams.items()]
+            })
+        except:
+            print traceback.format_exc()
+
+    def setProgram(self, key, value):
+        self._programs[key] = value
+    
+    def program(self, key):
+        return self._programs.get(key)
+    
+    def setProgramAttr(self, programNo, attr):
+        data = []
+        attr.get_write_value(data)
+        print "In " + self.get_name() + ".setProgramAttr(%s)"%str(data)
+        if data is None or ( len(data) == 0 or len(data) % 3 != 0 ):
+            raise ValueError
+        self.setProgram(programNo, data)
+        self.setParams(programNo, list(PARAMS_DEFAULT))
+ 
+    def programAttr(self, programNo, attr):
+        print "In " + self.get_name() + ".programAttr()"
+        data = self.program(programNo) or []
+        dim_x = 3
+        dim_y = len(data) / 3    
+        attr.set_value(data, dim_x, dim_y)
         
-#    setTempMax()
-
-
-#------------------------------------------------------------------------------
-""" Methods to manage the Zones dictionary
-Zones = dict(int:[]); keeps the zones managed by each program
-"""
-
+    def setParams(self, key, value):
+        self._pParams[key] = value
+        
+    def params(self, key):
+        return self._pParams.get(key)
+                
+    def paramsAttr(self, programNo, attr):
+        print "In " + self.get_name() + ".paramsAttr()"
+        data = self.params(programNo) or []
+        attr.set_value(data)
+        
     def zoneCount(self):
         return self._zoneCount
-    
-#    zoneCount()
         
     def zones(self, key):
         return self._pZones.get(key)
-    
-#    zones()
         
     def setZones(self, key, value):
         self._pZones[key] = value
-    
-#    setZones()
  
-     def zonesAttr(self, programNo, attr):
+    def zonesAttr(self, programNo, attr):
         print "In " + self.get_name() + ".zonesAttr()"
-        data = self.zones(programNo)        
+        data = self.zones(programNo) or []
         attr.set_value(data)
-    
-#    zonesAttr()
 
     def setZonesAttr(self, programNo, attr):
-        print "In " + self.get_name() + ".setZonesAttr()"
         data = []
         attr.get_write_value(data)
+        print "In " + self.get_name() + ".setZonesAttr(%s)"%str(data)
         dataSet = set(data)
         dataSet.intersection_update(i for i in range(1, self.zoneCount() + 1))
         for otherSet in [self.zones(pNo) for pNo in range(1, self.zoneCount() + 1) if pNo != programNo]:
             if ( dataSet.intersection(otherSet) ):
                 dataSet.difference_update(otherSet)
         self.setZones(programNo, sorted(dataSet))
-        
-#    setZonesAttr()
 
-#------------------------------------------------------------------------------
- 
+    ###########################################################################
+
     def update_properties(self, property_list=[]):
         property_list = property_list or self.get_device_class().device_property_list.keys()
         if ( not hasattr(self, "db") or not self.db ):
@@ -454,48 +394,118 @@ Zones = dict(int:[]); keeps the zones managed by each program
         for key, value in props.items():
             print "\tUpdating property %s = %s" % (key, value)
             self.db.put_device_property(self.get_name(), {key:isinstance(value, list) and value or [value]})
-            
-#    update_properties()
-
       
+    def dyn_attr(self):
+        """
+        It is called after init_device in the Tango layer side.
+        It creates the attributes needed to manage each channel (8 by default).
+        """
+        for i in range(1,self.NChannels+1):
+            #"Output_1":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ]],
+            attrib,format,unit = PyTango.Attr('Output_%d'%((i)),PyTango.DevShort, PyTango.READ),'%1.1f','%'
+            print 'Creating attribute %s ...'%attrib
+            props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
+            attrib.set_default_properties(props)
+            rfun = (lambda s,a,index=i: self.outputAttr(index,a))
+            self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
+            
+            #"Output_1_Limit":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ_WRITE],{"min value": 0,"max value": 100}],            
+            attrib,format,unit = PyTango.Attr('Output_%d_Limit'%((i)),PyTango.DevShort, PyTango.READ_WRITE),'%1.1f','%'
+            print 'Creating attribute %s ...'%attrib
+            props = PyTango.UserDefaultAttrProp(); props.set_min_value('0'); props.set_max_value('100'); props.set_format(format); props.set_unit(unit)
+            attrib.set_default_properties(props)
+            rfun = (lambda s,a,index=i: self.limitAttr(index,a))
+            wfun = (lambda s,a,index=i: self.setLimitAttr(index,attr))
+            self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
+            
+            #"Program_1":[[PyTango.DevDouble, PyTango.IMAGE, PyTango.READ_WRITE, 3, 64]], 
+            attrib = PyTango.ImageAttr('Program_%d'%((i)),PyTango.DevDouble, PyTango.READ_WRITE,3,64)
+            print 'Creating attribute %s ...'%attrib
+            rfun = (lambda s,a,index=i: self.programAttr(index,a))
+            wfun = (lambda s,a,index=i: self.setProgramAttr(index,a))
+            self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
+            
+            #"Program_1_Params":[[PyTango.DevDouble, PyTango.SPECTRUM, PyTango.READ, 4]],
+            attrib = PyTango.SpectrumAttr('Program_%d_Params'%((i)),PyTango.DevDouble, PyTango.READ,4)
+            print 'Creating attribute %s ...'%attrib
+            rfun = (lambda s,a,index=i: self.paramsAttr(index,a))
+            self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
+            
+            #"Program_1_Zones":[[PyTango.DevShort, PyTango.SPECTRUM, PyTango.READ_WRITE, 8]],
+            attrib = PyTango.SpectrumAttr('Program_%d_Zones'%((i)),PyTango.DevShort, PyTango.READ_WRITE,8)
+            print 'Creating attribute %s ...'%attrib
+            rfun = (lambda s,a,index=i: self.zonesAttr(index,a))
+            wfun = (lambda s,a,index=i: self.setZonesAttr(index,a))
+            self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
+            
+            #"Temperature_1":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ]],
+            attrib,format,unit = PyTango.Attr('Temperature_%d'%((i)),PyTango.DevDouble, PyTango.READ),'%1.1f',''
+            print 'Creating attribute %s ...'%attrib
+            props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
+            attrib.set_default_properties(props)
+            rfun = (lambda s,a,index=i: self.temperatureAttr(index,a))
+            self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
+                
+            #"Temperature_1_Setpoint":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ_WRITE]],
+            attrib,format,unit = PyTango.Attr('Temperature_%d_Setpoint'%((i)),PyTango.DevDouble, PyTango.READ),'%1.1f',''
+            print 'Creating attribute %s ...'%attrib
+            props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
+            attrib.set_default_properties(props)
+            rfun = (lambda s,a,index=i: self.temperatureSpAttr(index,a))
+            #wfun = (lambda s,a,index=i: self.setTemperatureSpAttr(index,a))
+            self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
+            
+            print "%s.dyn_attr() finished" % (self.get_name())
+            
 #------------------------------------------------------------------------------ 
 #    Device constructor
 #------------------------------------------------------------------------------ 
     def __init__(self, cl, name):
         print "In __init__()"        
         PyTango.Device_3Impl.__init__(self, cl, name)
-        BakeOutControlDS.init_device(self)
         
-#    __init__()
-
-#------------------------------------------------------------------------------ 
-#    Device destructor
-#------------------------------------------------------------------------------ 
-    def delete_device(self):
-        print "In " + self.get_name() + ".delete_device()"        
-        if ( self.ControllerType.lower() == "elotech" and self.serial() ):
-            self.serial().close()
-            
-#    delete_device()
-
-#------------------------------------------------------------------------------ 
-#    Device initialization
-#------------------------------------------------------------------------------ 
-    def init_device(self):
-        print "In " + self.get_name() + ".init_device()"        
-        self.set_state(PyTango.DevState.ON)
-        self.get_device_properties(self.get_device_class())
-        self.update_properties()
+        self.NChannels = 8
         self.error_count = 0
+        self._modbus = None
+        self._serial = None
         self._zoneCount = 1
         self._programs = None
         self._pParams = None
         self._pZones = None
         self._temps = None
         self._pressure = 0.
-        self._pressureTime = long(0)
+        self._pressureTime = 0
+        self._statusTime = 0
+        self.MIN_CHECK_INTERVAL = 10.
         self._tempMax = 0.
         self._tempAllTime = long(0)
+        self.serialLock = threading.Lock()
+        self.threadDict = None
+        self.Trace = False
+        
+        BakeOutControlDS.init_device(self)
+        
+#------------------------------------------------------------------------------ 
+#    Device destructor
+#------------------------------------------------------------------------------ 
+    def delete_device(self):
+        print "In " + self.get_name() + ".delete_device()"        
+        if ( self.ControllerType.lower() == "elotech" and self.serial() ):
+            
+            try:
+                self.serialLock.acquire() 
+                self.serial().close()
+            finally: 
+                self.serialLock.release()
+            
+#------------------------------------------------------------------------------ 
+#    Device initialization
+#------------------------------------------------------------------------------ 
+    def init_device(self):
+        print "In " + self.get_name() + ".init_device()"        
+        self.set_state(PyTango.DevState.OFF)
+        self.get_device_properties(self.get_device_class())
+        #self.update_properties()
         
         try: 
             print 'PressureAttribute: %s'%self.PressureAttribute
@@ -514,27 +524,42 @@ Zones = dict(int:[]); keeps the zones managed by each program
             elif ( self.ControllerType.lower() == "elotech" ):
                 print "\tUsing an elotech controller..."
                 self.init_serial()
-                self._serial.open()
                 self._zoneCount = 8
                 self._programs = dict.fromkeys((i for i in range(1, self._zoneCount + 1)), PROGRAM_DEFAULT)
                 self._pParams = dict((i, list(PARAMS_DEFAULT)) for i in range(1, self._zoneCount + 1))
                 self._pZones = dict.fromkeys((i for i in range(1, self._zoneCount + 1)), list())
-                self._temps = dict.fromkeys((i for i in range(1, self._zoneCount + 1)), TEMP_DEFAULT)
-                self._c = Controller(self)
-                self._q = self._c.queue()
-                self._c.setDaemon(True)
-                self._c.start()
+                self._temps = dict.fromkeys((i for i in range(1, self._zoneCount + 1)), (0,TEMP_DEFAULT))
+                if getattr(self,'_c',None) is None:
+                    self._c = Controller(self)
+                    self._q = self._c.queue()
+                    self._c.setDaemon(True)
+                    self._c.start()
             else:
                 raise Exception("UnknownController: %s" % self.ControllerType)
         except Exception, e:
 #            self._modbus = None
 #            self._serial = None
             raise Exception("InitError", e)
+            
+        if self.threadDict is None:
+            print "\tInitializing serial threadDict"
+            self.threadDict = fandango.ThreadDict(
+                read_method = self.SendCommand,
+                trace=self.Trace)
+            # Every command has [device = 1, zone = 1-8, instruction = SEND(read)/ACPT(write), code = OUTPUT/TEMPERATURE/RAMP/...]
+            POLL_PERIOD = 5.
+            commands = ([(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.OUTPUT) for z in range(self._zoneCount)]+
+                        [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.TEMP) for z in range(self._zoneCount)]+
+                        [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.ZONE_ON_OFF) for z in range(self._zoneCount)])
+            [self.threadDict.append(c,period=POLL_PERIOD) for c in commands]
+            self.threadDict.set_timewait(max((1e-3*self.Timewait,POLL_PERIOD/len(commands))))
+            commands = ([(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.OUTPUT_LIMIT) for z in range(self._zoneCount)]+
+                        [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.SETPOINT) for z in range(self._zoneCount)])
+            [self.threadDict.append(c,period=3.*POLL_PERIOD) for c in commands]
+            self.threadDict.start()
         
         print "\tDevice server " + self.get_name() + " awaiting requests..."
         
-#    init_device()
-
 #------------------------------------------------------------------------------ 
 #    Always excuted hook method
 #------------------------------------------------------------------------------ 
@@ -542,18 +567,18 @@ Zones = dict(int:[]); keeps the zones managed by each program
 #        print "In " + self.get_name() + ".always_executed_hook()"        
         try:
             if ( self.ControllerType.lower() == "eurotherm" ):
-                self.modbus().ping()  
-            if (self.error_count>MAX_ERRORS):
-                self.set_state(PyTango.DevState.UNKNOWN)
-            if self.error_count<=0 and self.get_state()==PyTango.DevState.UNKNOWN:
-                self.set_state(PyTango.DevState.ON)
+                self.modbus().ping()
+            if self.get_state()!=PyTango.DevState.FAULT:
+                if (self.error_count>MAX_ERRORS):
+                    self.set_state(PyTango.DevState.UNKNOWN)
+                    self.set_status('Unable to communicate with device\n%d communication errors'%self.error_count)
+                if self.error_count<=0 and self.get_state()==PyTango.DevState.UNKNOWN:
+                    self.set_state(PyTango.DevState.ON)
         except:
             print 'Exception in always_executed_hook():'
             print traceback.format_exc()
             self.set_state(PyTango.DevState.UNKNOWN)
             
-#    always_executed_hook()
-
 #------------------------------------------------------------------------------ 
 #    Read Attribute Hardware
 #------------------------------------------------------------------------------ 
@@ -561,204 +586,15 @@ Zones = dict(int:[]); keeps the zones managed by each program
 #        print "In " + self.get_name() + ".read_attr_hardware()"        
         pass
         
-#    read_attr_hardware()
-
 #===============================================================================
 # 
 #    BakeOutControlDS read/write attribute methods
 # 
 #===============================================================================
-#------------------------------------------------------------------------------ 
-#    Read Output_1 attribute
-#------------------------------------------------------------------------------ 
-    def read_Output_1(self, attr):
-        self.outputAttr(1, attr)
-        
-#    read_Output_1()
- 
-#------------------------------------------------------------------------------ 
-#    Read Output_2 attribute
-#------------------------------------------------------------------------------ 
-    def read_Output_2(self, attr):
-        self.outputAttr(2, attr)
-        
-#    read_Output_2()
- 
-#------------------------------------------------------------------------------ 
-#    Read Output_3 attribute
-#------------------------------------------------------------------------------ 
-    def read_Output_3(self, attr):
-        self.outputAttr(3, attr)
-        
-#    read_Output_3()
- 
-#------------------------------------------------------------------------------ 
-#    Read Output_4 attribute
-#------------------------------------------------------------------------------
-    def read_Output_4(self, attr):
-        self.outputAttr(4, attr)
-        
-#    read_Output_4()
- 
-#------------------------------------------------------------------------------ 
-#    Read Output_5 attribute
-#------------------------------------------------------------------------------
-    def read_Output_5(self, attr):
-        self.outputAttr(5, attr)
-        
-#    read_Output_5()
- 
-#------------------------------------------------------------------------------ 
-#    Read Output_6 attribute
-#------------------------------------------------------------------------------
-    def read_Output_6(self, attr):
-        self.outputAttr(6, attr)
-        
-#    read_Output_6()
- 
-#------------------------------------------------------------------------------ 
-#    Read Output_7 attribute
-#------------------------------------------------------------------------------
-    def read_Output_7(self, attr):
-        self.outputAttr(7, attr)
-        
-#    read_Output_7()
- 
-#------------------------------------------------------------------------------ 
-#    Read Output_8 attribute
-#------------------------------------------------------------------------------
-    def read_Output_8(self, attr):
-        self.outputAttr(8, attr)
-        
-#    read_Output_8()
 
-#------------------------------------------------------------------------------ 
-#    Read Output_1_Limit attribute
-#------------------------------------------------------------------------------
-    def read_Output_1_Limit(self, attr):
-        self.limitAttr(1, attr)
-        
-#    read_Output_1_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Write Output_1_Limit attribute
-#------------------------------------------------------------------------------
-    def write_Output_1_Limit(self, attr):
-        self.setLimitAttr(1, attr)
-        
-#    write_Output_1_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Read Output_2_Limit attribute
-#------------------------------------------------------------------------------
-    def read_Output_2_Limit(self, attr):
-        self.limitAttr(2, attr)
-        
-#    read_Output_2_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Write Output_2_Limit attribute
-#------------------------------------------------------------------------------
-    def write_Output_2_Limit(self, attr):
-        self.setLimitAttr(2, attr)
-        
-#    write_Output_2_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Read Output_3_Limit attribute
-#------------------------------------------------------------------------------
-    def read_Output_3_Limit(self, attr):
-        self.limitAttr(3, attr)
-        
-#    read_Output_3_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Write Output_3_Limit attribute
-#------------------------------------------------------------------------------
-    def write_Output_3_Limit(self, attr):
-        self.setLimitAttr(3, attr)
-        
-#    write_Output_3_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Read Output_4_Limit attribute
-#------------------------------------------------------------------------------
-    def read_Output_4_Limit(self, attr):
-        self.limitAttr(4, attr)
-        
-#    read_Output_4_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Write Output_4_Limit attribute
-#------------------------------------------------------------------------------
-    def write_Output_4_Limit(self, attr):
-        self.setLimitAttr(4, attr)
-        
-#    write_Output_4_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Read Output_5_Limit attribute
-#------------------------------------------------------------------------------
-    def read_Output_5_Limit(self, attr):
-        self.limitAttr(5, attr)
-        
-#    read_Output_5_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Write Output_5_Limit attribute
-#------------------------------------------------------------------------------
-    def write_Output_5_Limit(self, attr):
-        self.setLimitAttr(5, attr)
-        
-#    write_Output_5_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Read Output_6_Limit attribute
-#------------------------------------------------------------------------------
-    def read_Output_6_Limit(self, attr):
-        self.limitAttr(6, attr)
-        
-#    read_Output_6_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Write Output_6_Limit attribute
-#------------------------------------------------------------------------------
-    def write_Output_6_Limit(self, attr):
-        self.setLimitAttr(6, attr)
-        
-#    write_Output_6_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Read Output_7_Limit attribute
-#------------------------------------------------------------------------------
-    def read_Output_7_Limit(self, attr):
-        self.limitAttr(7, attr)
-        
-#    read_Output_7_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Write Output_7_Limit attribute
-#------------------------------------------------------------------------------
-    def write_Output_7_Limit(self, attr):
-        self.setLimitAttr(7, attr)
-        
-#    write_Output_7_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Read Output_8_Limit attribute
-#------------------------------------------------------------------------------
-    def read_Output_8_Limit(self, attr):
-        self.limitAttr(8, attr)
-        
-#    read_Output_8_Limit()
-
-#------------------------------------------------------------------------------ 
-#    Write Output_8_Limit attribute
-#------------------------------------------------------------------------------
-    def write_Output_8_Limit(self, attr):
-        self.setLimitAttr(8, attr)
-        
-#    write_Output_8_Limit()
+    ###############################################################################
+    # Output,Limit,Programs,Params and Temperature Attributes are managed using dynamic attributes
+    ###############################################################################
 
 #------------------------------------------------------------------------------ 
 #    Read Pressure attribute
@@ -768,12 +604,9 @@ Zones = dict(int:[]); keeps the zones managed by each program
         if ( not self.pressureAttr ):
             raise Exception("PressureAttributeError")
         
-        self.setPressureTime()
-        self.setPressure(self.CheckPressure())
-        attr.set_value(self.pressure())
+        self.CheckPressure()
+        attr.set_value(self._pressure)
         
-#    read_Pressure()
-
 #------------------------------------------------------------------------------ 
 #    Read Pressure_SetPoint attribute
 #------------------------------------------------------------------------------
@@ -781,8 +614,6 @@ Zones = dict(int:[]); keeps the zones managed by each program
         print "In " + self.get_name() + ".read_Pressure_SetPoint()"
         data = self.PressureSetPoint
         attr.set_value(data)
-
-#    read_Pressure_SetPoint()
 
 #------------------------------------------------------------------------------ 
 #    Write Pressure_SetPoint attribute
@@ -792,442 +623,8 @@ Zones = dict(int:[]); keeps the zones managed by each program
         data = []
         attr.get_write_value(data)
         self.PressureSetPoint = float(data[0])
-        self.update_properties()
-        
-#    write_Pressure_SetPoint()
+        self.update_properties(['PressureSetPoint'])
 
-#------------------------------------------------------------------------------ 
-#    Read Program_1 attribute
-#------------------------------------------------------------------------------        
-    def read_Program_1(self, attr):
-        print "In " + self.get_name() + ".read_Program_1()"
-        self.programAttr(1, attr)
-        
-#    read_Program_1()
-  
-#------------------------------------------------------------------------------ 
-#    Write Program_1 attribute
-#------------------------------------------------------------------------------
-    def write_Program_1(self, attr):
-        print "In " + self.get_name() + ".write_Program_1()"
-        self.setProgramAttr(1, attr)
-        
-#    write_Program_1()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_2 attribute
-#------------------------------------------------------------------------------        
-    def read_Program_2(self, attr):
-        print "In " + self.get_name() + ".read_Program_2()"
-        self.programAttr(2, attr)
-        
-#    read_Program_2()
-         
-#------------------------------------------------------------------------------ 
-#    Write Program_2 attribute
-#------------------------------------------------------------------------------
-    def write_Program_2(self, attr):
-        print "In " + self.get_name() + ".write_Program_2()"
-        self.setProgramAttr(2, attr)
-        
-#    write_Program_2()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_3 attribute
-#------------------------------------------------------------------------------ 
-    def read_Program_3(self, attr):
-        print "In " + self.get_name() + ".read_Program_3()"
-        self.programAttr(3, attr)
-        
-#    read_Program_3()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_3 attribute
-#------------------------------------------------------------------------------
-    def write_Program_3(self, attr):
-        print "In " + self.get_name() + ".write_Program_3()"
-        self.setProgramAttr(3, attr)
-        
-#    write_Program_3()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_4 attribute
-#------------------------------------------------------------------------------ 
-    def read_Program_4(self, attr):
-        print "In " + self.get_name() + ".read_Program_4()"
-        self.programAttr(4, attr)
-        
-#    read_Program_4()
-       
-#------------------------------------------------------------------------------ 
-#    Write Program_4 attribute
-#------------------------------------------------------------------------------
-    def write_Program_4(self, attr):
-        print "In " + self.get_name() + ".write_Program_4()"
-        self.setProgramAttr(4, attr)
-        
-#    write_Program_4()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_5 attribute
-#------------------------------------------------------------------------------ 
-    def read_Program_5(self, attr):
-        print "In " + self.get_name() + ".read_Program_5()"
-        self.programAttr(5, attr)
-        
-#    read_Program_5()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_5 attribute
-#------------------------------------------------------------------------------
-    def write_Program_5(self, attr):
-        print "In " + self.get_name() + ".write_Program_5()"
-        self.setProgramAttr(5, attr)
-        
-#    write_Program_5()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_6 attribute
-#------------------------------------------------------------------------------  
-    def read_Program_6(self, attr):
-        print "In " + self.get_name() + ".read_Program_6()"
-        self.programAttr(6, attr)
-        
-#    read_Program_6()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_6 attribute
-#------------------------------------------------------------------------------
-    def write_Program_6(self, attr):
-        print "In " + self.get_name() + ".write_Program_6()"
-        self.setProgramAttr(6, attr)
-        
-#    write_Program_6()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_7 attribute
-#------------------------------------------------------------------------------ 
-    def read_Program_7(self, attr):
-        print "In " + self.get_name() + ".read_Program_7()"
-        self.programAttr(7, attr)
-        
-#    read_Program_7()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_7 attribute
-#------------------------------------------------------------------------------
-    def write_Program_7(self, attr):
-        print "In " + self.get_name() + ".write_Program_7()"
-        self.setProgramAttr(7, attr)
-        
-#    write_Program_7()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_8 attribute
-#------------------------------------------------------------------------------ 
-    def read_Program_8(self, attr):
-        print "In " + self.get_name() + ".read_Program_8()"
-        self.programAttr(8, attr)
-        
-#    read_Program_8()
-
-#------------------------------------------------------------------------------ 
-#    Write Program_8 attribute
-#------------------------------------------------------------------------------
-    def write_Program_8(self, attr):
-        print "In " + self.get_name() + ".write_Program_8()"
-        self.setProgramAttr(8, attr)
-        
-#    write_Program_8()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_1_Params attribute
-#------------------------------------------------------------------------------      
-    def read_Program_1_Params(self, attr):
-        print "In " + self.get_name() + ".read_Program_1_Params()"
-        self.paramsAttr(1, attr)
-        
-#    read_Program_1_Params()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_2_Params attribute
-#------------------------------------------------------------------------------       
-    def read_Program_2_Params(self, attr):
-        print "In " + self.get_name() + ".read_Program_2_Params()"
-        self.paramsAttr(2, attr)
-
-#    read_Program_2_Params()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_3_Params attribute
-#------------------------------------------------------------------------------
-    def read_Program_3_Params(self, attr):
-        print "In " + self.get_name() + ".read_Program_3_Params()"
-        self.paramsAttr(3, attr)
-
-#    read_Program_3_Params()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_4_Params attribute
-#------------------------------------------------------------------------------
-    def read_Program_4_Params(self, attr):
-        print "In " + self.get_name() + ".read_Program_4_Params()"
-        self.paramsAttr(4, attr)
-
-#    read_Program_4_Params()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_5_Params attribute
-#------------------------------------------------------------------------------       
-    def read_Program_5_Params(self, attr):
-        print "In " + self.get_name() + ".read_Program_5_Params()"
-        self.paramsAttr(5, attr)
-
-#    read_Program_5_Params()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_6_Params attribute
-#------------------------------------------------------------------------------ 
-    def read_Program_6_Params(self, attr):
-        print "In " + self.get_name() + ".read_Program_6_Params()"
-        self.paramsAttr(6, attr)
-
-#    read_Program_6_Params()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_7_Params attribute
-#------------------------------------------------------------------------------
-    def read_Program_7_Params(self, attr):
-        print "In " + self.get_name() + ".read_Program_7_Params()"
-        self.paramsAttr(7, attr)
-        
-#    read_Program_7_Params()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_8_Params attribute
-#------------------------------------------------------------------------------        
-    def read_Program_8_Params(self, attr):
-        print "In " + self.get_name() + ".read_Program_8_Params()"
-        self.paramsAttr(8, attr)
-        
-#    read_Program_8_Params()
-
-#------------------------------------------------------------------------------ 
-#    Read Program_1_Zones attribute
-#------------------------------------------------------------------------------       
-    def read_Program_1_Zones(self, attr):
-        print "In " + self.get_name() + ".read_Program_1_Zones()"
-        self.zonesAttr(1, attr)
-        
-#    read_Program_1_Zones()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_1_Zones attribute
-#------------------------------------------------------------------------------
-    def write_Program_1_Zones(self, attr):
-        print "In " + self.get_name() + ".write_Program_1_Zones()"
-        self.setZonesAttr(1, attr)
-        
-#    write_Program_1_Zones()
- 
-#------------------------------------------------------------------------------ 
-#    Read Program_2_Zones attribute
-#------------------------------------------------------------------------------       
-    def read_Program_2_Zones(self, attr):
-        print "In " + self.get_name() + ".read_Program_2_Zones()"
-        self.zonesAttr(2, attr)
-        
-#    read_Program_2_Zones()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_2_Zones attribute
-#------------------------------------------------------------------------------
-    def write_Program_2_Zones(self, attr):
-        print "In " + self.get_name() + ".write_Program_2_Zones()"
-        self.setZonesAttr(2, attr)
-        
-#    write_Program_2_Zones()
- 
-#------------------------------------------------------------------------------ 
-#    Read Program_3_Zones attribute
-#------------------------------------------------------------------------------
-    def read_Program_3_Zones(self, attr):
-        print "In " + self.get_name() + ".read_Program_3_Zones()"
-        self.zonesAttr(3, attr)
-        
-#    read_Program_3_Zones()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_3_Zones attribute
-#------------------------------------------------------------------------------
-    def write_Program_3_Zones(self, attr):
-        print "In " + self.get_name() + ".write_Program_3_Zones()"
-        self.setZonesAttr(3, attr)
-        
-#    write_Program_3_Zones()
- 
-#------------------------------------------------------------------------------ 
-#    Read Program_4_Zones attribute
-#------------------------------------------------------------------------------
-    def read_Program_4_Zones(self, attr):
-        print "In " + self.get_name() + ".read_Program_4_Zones()"
-        self.zonesAttr(4, attr)
-         
-#    read_Program_4_Zones()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_4_Zones attribute
-#------------------------------------------------------------------------------
-    def write_Program_4_Zones(self, attr):
-        print "In " + self.get_name() + ".write_Program_4_Zones()"
-        self.setZonesAttr(4, attr)
-        
-#    write_Program_4_Zones()
-       
-#------------------------------------------------------------------------------ 
-#    Read Program_5_Zones attribute
-#------------------------------------------------------------------------------
-    def read_Program_5_Zones(self, attr):
-        print "In " + self.get_name() + ".read_Program_5_Zones()"
-        self.zonesAttr(5, attr)
-         
-#    read_Program_5_Zones()
-    
-#------------------------------------------------------------------------------ 
-#    Write Program_5_Zones attribute
-#------------------------------------------------------------------------------
-    def write_Program_5_Zones(self, attr):
-        print "In " + self.get_name() + ".write_Program_5_Zones()"
-        self.setZonesAttr(5, attr)
-        
-#    write_Program_5_Zones()
- 
-#------------------------------------------------------------------------------ 
-#    Read Program_6_Zones attribute
-#------------------------------------------------------------------------------
-    def read_Program_6_Zones(self, attr):
-        print "In " + self.get_name() + ".read_Program_6_Zones()"
-        self.zonesAttr(6, attr)
-        
-#    read_Program_6_Zones()
-        
-#------------------------------------------------------------------------------ 
-#    Write Program_6_Zones attribute
-#------------------------------------------------------------------------------
-    def write_Program_6_Zones(self, attr):
-        print "In " + self.get_name() + ".write_Program_6_Zones()"
-        self.setZonesAttr(6, attr)
-        
-#    write_Program_6_Zones()
- 
-#------------------------------------------------------------------------------ 
-#    Read Program_7_Zones attribute
-#------------------------------------------------------------------------------
-    def read_Program_7_Zones(self, attr):
-        print "In " + self.get_name() + ".read_Program_7_Zones()"
-        self.zonesAttr(7, attr)
-        
-#    read_Program_7_Zones()
- 
-#------------------------------------------------------------------------------ 
-#    Write Program_7_Zones attribute
-#------------------------------------------------------------------------------         
-    def write_Program_7_Zones(self, attr):
-        print "In " + self.get_name() + ".write_Program_7_Zones()"
-        self.setZonesAttr(7, attr)
-       
-#    write_Program_7_Zones()
-       
-#------------------------------------------------------------------------------ 
-#    Read Program_8_Zones attribute
-#------------------------------------------------------------------------------
-    def read_Program_8_Zones(self, attr):
-        print "In " + self.get_name() + ".read_Program_8_Zones()"
-        self.zonesAttr(8, attr)
-        
-#    read_Program_8_Zones()
-
-#------------------------------------------------------------------------------ 
-#    Write Program_8_Zones attribute
-#------------------------------------------------------------------------------          
-    def write_Program_8_Zones(self, attr):
-        print "In " + self.get_name() + ".write_Program_8_Zones()"
-        self.setZonesAttr(8, attr)
-        
-#    write_Program_8_Zones()
- 
-#------------------------------------------------------------------------------ 
-#    Read Temperature_1 attribute
-#------------------------------------------------------------------------------
-    def read_Temperature_1(self, attr):
-        print "In " + self.get_name() + ".read_Temperature_1()"
-        self.temperatureAttr(1, attr)
-        
-#    read_Temperature_1()
- 
-#------------------------------------------------------------------------------ 
-#    Read Temperature_2 attribute
-#------------------------------------------------------------------------------
-    def read_Temperature_2(self, attr):
-        print "In " + self.get_name() + ".read_Temperature_2()"
-        self.temperatureAttr(2, attr)
-        
-#    read_Temperature_2()
-   
-#------------------------------------------------------------------------------ 
-#    Read Temperature_3 attribute
-#------------------------------------------------------------------------------
-    def read_Temperature_3(self, attr):
-        print "In " + self.get_name() + ".read_Temperature_3()"
-        self.temperatureAttr(3, attr)
-        
-#    read_Temperature_3()
-   
-#------------------------------------------------------------------------------ 
-#    Read Temperature_4 attribute
-#------------------------------------------------------------------------------
-    def read_Temperature_4(self, attr):
-        print "In " + self.get_name() + ".read_Temperature_4()"
-        self.temperatureAttr(4, attr)
-        
-#    read_Temperature_4()
-   
-#------------------------------------------------------------------------------ 
-#    Read Temperature_5 attribute
-#------------------------------------------------------------------------------
-    def read_Temperature_5(self, attr):
-        print "In " + self.get_name() + ".read_Temperature_5()"
-        self.temperatureAttr(5, attr)
-        
-#    read_Temperature_5()
-   
-#------------------------------------------------------------------------------ 
-#    Read Temperature_6 attribute
-#------------------------------------------------------------------------------
-    def read_Temperature_6(self, attr):
-        print "In " + self.get_name() + ".read_Temperature_6()"
-        self.temperatureAttr(6, attr)
-        
-#    read_Temperature_6()
-   
-#------------------------------------------------------------------------------ 
-#    Read Temperature_7 attribute
-#------------------------------------------------------------------------------
-    def read_Temperature_7(self, attr):
-        print "In " + self.get_name() + ".read_Temperature_7()"
-        self.temperatureAttr(7, attr)
-        
-#    read_Temperature_7()
-   
-#------------------------------------------------------------------------------ 
-#    Read Temperature_8 attribute
-#------------------------------------------------------------------------------
-    def read_Temperature_8(self, attr):
-        print "In " + self.get_name() + ".read_Temperature_8()"
-        self.temperatureAttr(8, attr)
-        
-#    read_Temperature_8()
-  
 #------------------------------------------------------------------------------ 
 #    Read Temperature_All attribute
 #------------------------------------------------------------------------------
@@ -1253,8 +650,6 @@ Zones = dict(int:[]); keeps the zones managed by each program
             attr.set_value(data, len(data))
         
         return data
-    
-#    read_Temperature_All()
 
 #------------------------------------------------------------------------------ 
 #    Read Temperature_Max attribute
@@ -1273,7 +668,6 @@ Zones = dict(int:[]); keeps the zones managed by each program
             raise Exception("UnknownController: %s" % self.ControllerType)            
         attr.set_value(self.tempMax())
         
-#    read_Temperature_Max()
 
 #------------------------------------------------------------------------------ 
 #    Read Temperature_SetPoint attribute
@@ -1293,9 +687,8 @@ Zones = dict(int:[]); keeps the zones managed by each program
         data = []
         attr.get_write_value(data)
         self.TemperatureSetPoint = float(data[0])
-        self.update_properties()
+        self.update_properties(['TemperatureSetPoint'])
         
-#    write_Temperature_SetPoint()
 
 #===============================================================================
 # 
@@ -1309,28 +702,41 @@ Zones = dict(int:[]); keeps the zones managed by each program
 #
 #------------------------------------------------------------------------------ 
     def CheckPressure(self):
-        print "In " + self.get_name() + ".CheckPressure()"
+        print "In " + self.get_name() + ".CheckPressure() at %s"%time.ctime()
         
         try:
-            value = self.pressureAttr.read().value
+            if time.time()<(self._pressureTime+self.MIN_CHECK_INTERVAL): 
+                value = self._pressure
+            else:
+                print '\tDeviceProxy().read_attribute(%s)'%self.PressureAttribute
+                av = self.pressureAttr.read()
+                self._pressure = value = av.value
+                self._pressureTime = av.time.totime() #time.time()
             if ( value > self.PressureSetPoint ):
-                self.queue().put((0, ControllerCommand.STOP))
-                replies = 3
-                while ( replies ):
-                    self.CheckStatus()
-                    if ( self.get_state() != PyTango.DevState.ON ):
-                        self.set_state(PyTango.DevState.DISABLE)
-                        break
-                    replies -= 1
-                    Event().wait(.01)
-                if ( not replies ):
-                    self.set_state(PyTango.DevState.FAULT)
-                        
+                self.CheckStatus()
+                if self.get_state()!=PyTango.DevState.OFF:
+                    self.queue().put((0, ControllerCommand.STOP))
+                    replies = 3
+                    while ( replies ):
+                        self.CheckStatus(force=True)
+                        if ( self.get_state() not in (PyTango.DevState.OFF,PyTango.DevState.FAULT) ):
+                            msg = 'Disabled due to pressure interlock (%1.2e) at %s\n'%(value,time.ctime())
+                            print msg
+                            self.set_status(msg)
+                            self.set_state(PyTango.DevState.DISABLE)
+                            break
+                        replies -= 1
+                        Event().wait(1.)
+                    if ( not replies ):
+                        msg = 'Device unresponsive to Stop command after pressure interlock!'
+                        print msg
+                        self.set_status(msg)
+                        self.set_state(PyTango.DevState.FAULT)
             return value
         except Exception:
+            print traceback.format_exc()
             raise Exception("PressureAttributeError")
     
-#    CheckPressure()
     
 #------------------------------------------------------------------------------ 
 #    CheckStatus command
@@ -1338,64 +744,80 @@ Zones = dict(int:[]); keeps the zones managed by each program
 #    Description:
 #
 #------------------------------------------------------------------------------ 
-    def CheckStatus(self):
-        print "In " + self.get_name() + ".CheckStatus()"
+    def CheckStatus(self,force=False,alarm=False):
+        print "In " + self.get_name() + ".CheckStatus() at %s"%time.ctime()
         self.error_count = 0
-        
-        if ( self.ControllerType.lower() == "eurotherm" ):
-            raise NotImplementedError
-        elif ( self.ControllerType.lower() == "elotech" ):
-            status = [[False,False,False]]*self.zoneCount()
-            device = 1
-            instruction = "%02X" % ElotechInstruction.SEND
-            code = "%02X" % ElotechParameter.ZONE_ON_OFF
-            for zone in range(1, self.zoneCount() + 1):
-                ans = self.SendCommand([device, zone, instruction, code])
-                if ( ans ):
-                    status[zone - 1] = [bool(int(ans[11:13])), False, 0]
-                else: error_count+=1
-            for programNo in range(1, self.zoneCount() + 1):
-                params = self.params(programNo)
-                for zone in self.zones(programNo):
-                    status[zone - 1][1] = bool(params[1] and not params[3])
-                    status[zone - 1][2] = programNo
-            
-            alarm = False
-            statusStr = ""
-            for zone in range(1, self.zoneCount() + 1):
-                s, r, p = status[zone - 1]
-                statusStr += "Zone %d is" % zone
-                if ( s ):
-                    statusStr += " ON"
-                    if ( r ):
-                        statusStr += " | RUNNING"
-                        if ( p ):
-                            statusStr += " program %d" % p
+        statusStr = ""
+        try:
+            if ( self.ControllerType.lower() == "eurotherm" ):
+                raise NotImplementedError
+            elif ( self.ControllerType.lower() == "elotech" ):
+                if force and time.time()<(self._statusTime+self.MIN_CHECK_INTERVAL):
+                    print '\tStatus will be verified at most every %s seconds'%self.MIN_CHECK_INTERVAL
+                    return self.get_status().rstrip()
+                self._statusTime = time.time()
+                if self.get_state()!=PyTango.DevState.FAULT:
+                    status = [[False,False,False]]*self.zoneCount()
+                    device = 1
+                    instruction = "%02X" % ElotechInstruction.SEND
+                    code = "%02X" % ElotechParameter.ZONE_ON_OFF
+                    for zone in range(1, self.zoneCount() + 1):
+                        ans = self.threadDict.get((device, zone, instruction, code))
+                        if ( ans ):
+                            status[zone - 1] = [bool(int(ans[11:13])), False, 0]
+                        else: self.error_count+=1
+                    for programNo in range(1, self.zoneCount() + 1):
+                        params = self.params(programNo)
+                        for zone in self.zones(programNo):
+                            status[zone - 1][1] = bool(params[1] and not params[3])
+                            status[zone - 1][2] = programNo
+                    
+                    for zone in range(1, self.zoneCount() + 1):
+                        ON, Programmed, programNo  = status[zone - 1]
+                        statusStr += "Zone %d is" % zone
+                        if ( ON ):
+                            statusStr += " ON"
+                            if ( Programmed ):
+                                statusStr += "| RUNNING"
+                                if ( programNo ):
+                                    statusStr += " program %d" % programNo
+                            else:
+                                statusStr += " | Not Programmed"
+                        else:
+                            statusStr += " OFF"
+                            if ( Programmed ):
+                                statusStr += " | Programmed, SHOULD BE RUNNING"
+                                if ( programNo ):
+                                    statusStr += " program %d" % programNo
+                                alarm = True
+                        statusStr += "\n"
+                    if (self.error_count>MAX_ERRORS):
+                        self.set_state(PyTango.DevState.UNKNOWN)
+                        statusStr = 'Unable to communicate with device\n'+statusStr
+                        statusStr += '\n %d communication errors'%self.error_count
+                    elif ( alarm ):
+                        statusStr += " | ALARM (program doesnt match!)"
+                        self.set_state(PyTango.DevState.ALARM)
                     else:
-                        statusStr += " | ALARM!"
-                        alarm = True
+                        if any(st[0] for st in status):
+                            if any(st[1] for st in status):
+                                statusStr = 'Bakeout Programs Running\n'+statusStr
+                                self.set_state(PyTango.DevState.RUNNING)
+                            else:
+                                statusStr = 'Bakeout is ON\n'+statusStr
+                                self.set_state(PyTango.DevState.ON)
+                        elif self.get_state()!=PyTango.DevState.DISABLE:
+                            statusStr = 'Bakeout is OFF\n'+statusStr
+                            self.set_state(PyTango.DevState.OFF)
+                    self.set_status(statusStr)
+                    print '\tState=%s, Status=%s' % (self.get_state(),self.get_status())
                 else:
-                    statusStr += " OFF"
-                    if ( r ):
-                        statusStr += " | SHOULD BE RUNNING"
-                        if ( p ):
-                            statusStr += " program %d" % p
-                        statusStr += " | ALARM!"
-                        alarm = True
-                statusStr += "\n"
-        
-        if (self.error_count>MAX_ERRORS):
-            self.set_state(PyTango.DevState.UNKNOWN)
-        elif ( alarm ):
-            self.set_state(PyTango.DevState.ALARM)
-        else:
-            if ( any(st[0] for st in status) ):
-                self.set_state(PyTango.DevState.RUNNING)
-            else:
-                self.set_state(PyTango.DevState.ON)
+                    self.set_status('The device suffered an unrecoverable exception, it has to be restarted')
+        except Exception,e:
+            print traceback.format_exc()
+            raise e
         return statusStr.rstrip()
         
-#    CheckStatus()      
     
 #------------------------------------------------------------------------------ 
 #    Reset command
@@ -1408,7 +830,6 @@ Zones = dict(int:[]); keeps the zones managed by each program
 
         self.set_state(PyTango.DevState.ON)
         
-#    Reset()
     
 #------------------------------------------------------------------------------ 
 #    SendCommand command
@@ -1416,57 +837,62 @@ Zones = dict(int:[]); keeps the zones managed by each program
 #    Description:
 #
 #------------------------------------------------------------------------------ 
-    def SendCommand(self, command):
-        print "In " + self.get_name() + ".SendCommand()"
-        
-        self._sndCmdLock.acquire()
+    def SendCommand(self, command, retries=3):
+        if self.Trace: print "In " + self.get_name() + ".SendCommand(%s)"%str(command)
+        if self.error_count >= MAX_ERRORS: retries = 1
+        reply = ''
+        command = [c for c in command] #Converting hashable tuples to lists
+        self.serialLock.acquire()
         try:
-            if ( self.ControllerType.lower() == "eurotherm" ):
-                reply = str(self.modbus().ReadHoldingRegisters([int(command[0]), int(command[1])])[0])
-                print "\tRecv MODBUS: %s" % reply
-            elif ( self.ControllerType.lower() == "elotech" ):
-                if ( len(command) < 4 or len(command) > 5):
-                    raise ValueError
-                else:
-                    package = []
-                    for i in range(len(command)):
-                        if ( i < 2 ):
-                            command[i] = ["%02X" % int(command[i])]
-                        elif ( i < 4 ):
-                            command[i] = [command[i]]
-                        elif ( i == 4 ):
-                            command[i] = self.elotech_value(command[i])
-                        package.extend(command[i])            
-                    package.append(self.elotech_checksum(package))
-                    sndCmd = "\n" + "".join(package) + "\r"
-                    print "\tSend block: %s" % sndCmd.strip()
-                    self.serial().write(sndCmd)
-                    ans = self.listen()
-                    self.serial().flush() ##Needed to avoid errors parsing outdated strings!
-                    if ( ans ):
-                        try:
-                            print "\tRecv block: %s" % ans.strip()
-                            raise Exception(ElotechError.whatis(int(ans[7:9], 16))) ##It will raise KeyError if no error is found
-                        except KeyError:
-                            pass ##No errors, so we continue ...
-                        #if ans[-2:]!=self.elotech_checksum(ans[:-2]): #Checksum calcullation may not match with expected one
-                            #raise Exception('ChecksumFailed! %s!=%s'%(ans[-2:],self.elotech_checksum(ans[:-2])))
-                        if sndCmd.strip()[:4]!=ans.strip()[:4]:
-                            raise Exception('AnswerDontMatchZone! %s!=%s'%(ans.strip()[:4],sndCmd.strip()[:4]))
+            while not reply and retries:
+                retries-=1
+                if ( self.ControllerType.lower() == "eurotherm" ):
+                    reply = str(self.modbus().ReadHoldingRegisters([int(command[0]), int(command[1])])[0])
+                    if self.Trace: print "\tRecv MODBUS: %s" % reply
+                elif ( self.ControllerType.lower() == "elotech" ):
+                    if ( len(command) < 4 or len(command) > 5):
+                        raise ValueError
                     else:
-                        raise Exception("ConnectionError")
-                    reply = str(ans)
-            else:
-                raise Exception("UnknownController: %s" % self.ControllerType) 
-            
+                        package = []
+                        for i,c in enumerate(command):
+                            if ( i < 2 ): package.append("%02X" % int(c))
+                            elif ( i < 4 ): package.append(c)
+                            elif ( i == 4 ): package.append(self.elotech_value(c))
+                        package.append(self.elotech_checksum(package))
+                        sndCmd = "\n" + "".join(package) + "\r"
+                        if self.Trace: "\tSend block: %s" % sndCmd.strip()
+                        self.serial().flush() ##Needed to avoid errors parsing outdated strings!
+                        self.serial().write(sndCmd)
+                        ans = self.listen()
+                        self.serial().flush() ##Needed to avoid errors parsing outdated strings!
+                        if ( ans ):
+                            try:
+                                if self.Trace: print "\tRecv block: %s" % ans.strip()
+                                err =  ElotechError.whatis(int(ans[7:9], 16)) if len(ans)>7 else ans ##It will raise KeyError if no error is found
+                                msg = 'SendCommandException:%s'%(err)
+                                if not retries: raise Exception(msg)
+                                else: print 'Exception(%s): %d retries left'%(msg,retries)
+                            except KeyError:
+                                pass ##No errors, so we continue ...
+                            #if ans[-2:]!=self.elotech_checksum(ans[:-2]): #Checksum calcullation may not match with expected one
+                                #raise Exception('ChecksumFailed! %s!=%s'%(ans[-2:],self.elotech_checksum(ans[:-2])))
+                            if sndCmd.strip()[:4]!=ans.strip()[:4]:
+                                msg = 'AnswerDontMatchZone! send(%s)!=%s'%(sndCmd.strip(),ans.strip())
+                                if not retries: raise Exception(msg)
+                                else: print 'Exception(%s): %d retries left'%(msg,retries)
+                            else:
+                                reply = str(ans)
+                        else:
+                            if not retries: raise Exception("ConnectionError")
+                            else: print 'Exception("ConnectionError"): %d retries left'%retries
+                else:
+                    raise Exception("UnknownController: %s" % self.ControllerType) 
             return reply
         except Exception,e:
-            print ('Exception in %s.SendCommand: %s' % (self.get_name(),str(e)))
+            print ('Exception in %s.SendCommand(%s): %s' % (self.get_name(),command,traceback.format_exc()))
         finally:
-            self._sndCmdLock.release()
-            
-#    SendCommand()
-    
+            self.serialLock.release()
+
 #------------------------------------------------------------------------------ 
 #    Start command
 #
@@ -1475,10 +901,12 @@ Zones = dict(int:[]); keeps the zones managed by each program
 #------------------------------------------------------------------------------ 
     def Start(self, programNo):
         print "In " + self.get_name() + ".Start()"
-
-        self.queue().put((programNo, ControllerCommand.START))
+        try:
+            self.update_program_properties()
+            self.queue().put((programNo, ControllerCommand.START))
+        except:
+            print traceback.format_exc()
             
-#    Start()
     
 #------------------------------------------------------------------------------ 
 #    Stop command
@@ -1488,286 +916,7 @@ Zones = dict(int:[]); keeps the zones managed by each program
 #------------------------------------------------------------------------------ 
     def Stop(self, zone):
         print "In " + self.get_name() + ".Stop()"
-        
         self.queue().put((zone, ControllerCommand.STOP))
-                
-#    Stop()
-
-#BakeOutControlDS()
-
-#===============================================================================
-# 
-# Controller class definition
-# 
-#===============================================================================
-class Controller(threading.Thread):
-    def __init__(self, bakeOutControlDS, name="Bakeout-Controller"):
-        threading.Thread.__init__(self, name=name)
-
-        self._ds = bakeOutControlDS
-        self._programCount = self._ds.zoneCount()
-        self._programs = dict.fromkeys((i for i in range(1, self._programCount + 1)))
-        self._steppers = dict.fromkeys((i for i in range(1, self._programCount + 1)))
-        self._events = dict((i, threading.Event()) for i in range(1, self._programCount + 1))
-        self._q = Queue()
-        
-#    __init__()
-              
-    def device(self):
-        return self._ds
-    
-#    device()
-
-    def event(self, programNo):
-        return self._events.get(programNo)
-    
-#    event()
- 
-    def isRunning(self, programNo):
-        if ( programNo ):
-            return bool(self.stepper(programNo)) and self.stepper(programNo).isAlive()
-        else:
-            if any( [bool(self.stepper(programNo)) and self.stepper(programNo).isAlive() for programNo in range(self._programCount)] ):
-                return True
-            return False
-
-#    isRunning()
-                 
-    def program(self, programNo):
-        return self._programs.get(programNo)
-        
-#    program()
-
-    def programCount(self):
-        return self._programCount
-    
-#    programCount()
-      
-    def queue(self):
-        return self._q
-    
-#    queue()
-       
-    def run(self):            
-        while ( True ):      
-            programNo, command = self.queue().get()
-            
-            if ( command == ControllerCommand.STOP ):
-                for progNo in (programNo and (programNo,) or range(1, self.programCount() + 1)):
-                    if ( self.isRunning(progNo) ):
-                        print "\t", time.strftime("%H:%M:%S"), "%s: Stopping bakeout program %d" % (self.getName(), progNo)                
-                        self.setProgram(progNo, None)
-                        self.event(progNo).set()
-            elif ( command == ControllerCommand.START ):               
-                flatProgram = self.device().program(programNo)
-                if ( flatProgram == PROGRAM_DEFAULT ):
-                    print "\t", time.strftime("%H:%M:%S"), "Err: Program %d not saved" % programNo
-                else:
-                    zones = self.device().zones(programNo)
-                    if ( not zones ):
-                        print "\t", time.strftime("%H:%M:%S"), "Err: Zones for program %d not saved" % programNo
-                    else:
-                        print "\t", time.strftime("%H:%M:%S"), "%s: Starting bakeout program %d for zones %s" % (self.getName(), programNo, zones)                                                            
-                        program = self.unflattenProgram(flatProgram)
-                        self.setProgram(programNo, program)
-                        program = self.program(programNo)
-                        if ( program ):
-                            step = program.pop()
-                            stepper = Stepper(self, programNo, step, zones)
-                            self.setStepper(programNo, stepper)
-                            stepper.start()
-            elif ( command == ControllerCommand.PAUSE ):
-                raise NotImplementedError
-            elif ( command == ControllerCommand.FEED ):
-                program = self.program(programNo)
-                if ( program ):
-                    print "\t", time.strftime("%H:%M:%S"), "%s: Feeding program %d stepper with:" % (self.getName(), programNo),                
-                    step = program.pop()              
-                    self.stepper(programNo).setStep(step)
-                    print step
-                else:
-                    print "\t", time.strftime("%H:%M:%S"), "%s: Finishing bakeout program %d" % (self.getName(), programNo)
-                    self.setProgram(programNo, None)
-                    self.stepper(programNo).setStep(None)
-                    self.setStepper(programNo, None)
-                self.event(programNo).set()
-            self.queue().task_done()
-            Event().wait(.01)
-#    run()
-
-    def setProgram(self, programNo, program):
-        self._programs[programNo] = program
-        
-#    setProgram()
- 
-    def setStepper(self, programNo, stepper):
-        self._steppers[programNo] = stepper
-        
-#    setStepper()
-    
-    def stepper(self, programNo):
-        return self._steppers.get(programNo)
-        
-#    stepper()        
-    
-    def unflattenProgram(self, flatProgram):
-        if ( flatProgram == PROGRAM_DEFAULT ):
-            program = PROGRAM_DEFAULT
-        else:
-            program = []
-            for i in reversed(range(len(flatProgram) / 3)):
-                program.append([item for item in flatProgram[i * 3:(i + 1) * 3]])
-            
-        return program
-    
-#    unflattenProgram()
-   
-#Controller()
-
-#===============================================================================
-# 
-# Stepper class definition
-# 
-#===============================================================================
-class Stepper(threading.Thread):
-    def __init__(self, controller, programNo, step, zones):
-        threading.Thread.__init__(self, name="Bakeout-Program-%s" % programNo)
-
-        self._ds = controller.device()
-        self._q = controller.queue()
-        self._event = controller.event(programNo)
-        self._programNo = programNo
-        self._step = step
-        self._zones = zones
-        
-        params = self._ds.params(programNo)
-        self._sTemp = params[0] = self.maxDiff(step[0], zones)
-        params[1] = time.time()
-        params[2] = params[3] = 0.
-        self._ds.setParams(programNo, params)
-        
-#    __init__()
-
-    def execute(self, command):
-        self._ds.SendCommand(command)
-        
-#    execute()
-        
-    def event(self):
-        return self._event
-        
-#    event()
-
-    def feed(self):
-        self._q.put((self._programNo, ControllerCommand.FEED))
-        
-#    feed()
-        
-    def isFinished(self):
-        return not bool(self._step)
-    
-#    isFinished()
-
-    def maxDiff(self, temp, zones):
-        ta = [self._ds.temperatureAttr(z) for z in zones]
-        ts = [t for t in ta if t != TEMP_DEFAULT]
-        dt = [abs(temp - t) for t in ts]
-        return dt and ts[dt.index(max(dt))] or TEMP_DEFAULT
-    
-#    maxDiff()
- 
-    def params(self):
-        return self._ds.params(self._programNo)
-    
-#    params()
-
-    def ramp(self):
-        return self._step[1]
-    
-#    ramp()        
-         
-    def run(self):
-        for zone in self.zones():
-            start_command = [1, zone,
-                             "%02X" % ElotechInstruction.ACPT,
-                             "%02X" % ElotechParameter.ZONE_ON_OFF,
-                             1]
-            self.execute(start_command)
-        while ( not self.isFinished() ):
-            print "\t", time.strftime("%H:%M:%S"), "%s: Starting bakeout" % self.getName(), self._step
-            temp = self.temp()
-            ramp = self.ramp()
-            timeout = 60. * (60. * self.time() + abs(self.startTemp() - temp) / ramp)
-            self.setStartTemp(temp)
-            for zone in self.zones():
-                ramp_command = [1, zone,
-                                "%02X" % ElotechInstruction.ACPT,
-                                "%02X" % ElotechParameter.RAMP,
-                                ramp]
-                self.execute(ramp_command)
-            for zone in self.zones():                
-                temp_command = [1, zone,
-                                "%02X" % ElotechInstruction.ACPT,
-                                "%02X" % ElotechParameter.SETPOINT,
-                                temp]
-                self.execute(temp_command)
-            print "\t", time.strftime("%H:%M:%S"), "%s: Baking zones %s for %f minutes" % (self.getName(), self.zones(), timeout / 60. )
-            self.event().wait(timeout)
-            self.event().clear()
-            print "\t", time.strftime("%H:%M:%S"), "%s: Awaiting feed" % self.getName()
-            self.feed()
-            self.event().wait()
-            self.event().clear()
-        print "\t", time.strftime("%H:%M:%S"), "%s: Stopping bakeout" % self.getName()
-        for zone in self.zones():
-            stop_command = [1, zone,
-                            "%02X" % ElotechInstruction.ACPT,
-                            "%02X" % ElotechParameter.ZONE_ON_OFF,
-                            0]
-            self.execute(stop_command)
-        params = self.params()
-        params[3] = time.time()
-        self.setParams(params)
-        print "\t", time.strftime("%H:%M:%S"), "%s: Done" % self.getName()
-        
-#    run()
- 
-    def setParams(self, params):
-        self._ds.setParams(self._programNo, params)
-        
-#    setParams()        
-   
-    def setStartTemp(self, temp):
-        self._sTemp = temp
-        
-#    setStartTemp()
-
-    def setStep(self, step):
-        self._step = step
-        
-#    setStep()
-
-    def startTemp(self):
-        return self._sTemp
-   
-#    startTemp()
- 
-    def temp(self):
-        return self._step[0]
-    
-#    temp()        
-
-    def time(self):
-        return self._step[2]
-    
-#    time()        
-
-    def zones(self):
-        return self._zones
-    
-#    zones()
- 
-#Stepper()
 
 #===============================================================================
 #
@@ -1800,7 +949,27 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
         "TemperatureSetPoint":
             [PyTango.DevDouble, 
             "", 
-            [ 250 ] ],         
+            [ 250 ] ],
+        "Trace":
+            [PyTango.DevBoolean,
+            "This controls the standard output of the device",
+            [ False ] ],
+        "Timewait":
+            [PyTango.DevLong,
+            "Time to wait, in milliseconds, between serial communications",
+            [ 100 ] ],
+        "Timeout":
+            [PyTango.DevLong,
+            "Timeout, in milliseconds, for an answer from the controller",
+            [ 250 ] ],            
+        "ProgramParams":
+            [PyTango.DevVarStringArray, 
+            "", 
+            [ ] ],
+        "Programs":
+            [PyTango.DevVarStringArray, 
+            "", 
+            [ ] ],
         }
 
 #    Command definitions
@@ -1833,86 +1002,32 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
 
 #    Attribute definitions
     attr_list = {
-        "Output_1":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Output_2":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Output_3":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Output_4":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Output_5":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Output_6":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Output_7":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Output_8":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Output_1_Limit":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ_WRITE],
-            {"min value": 0,
-             "max value": 100}],
-        "Output_2_Limit":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ_WRITE],
-            {"min value": 0,
-             "max value": 100}],
-        "Output_3_Limit":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ_WRITE],
-            {"min value": 0,
-             "max value": 100}],
-        "Output_4_Limit":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ_WRITE],
-            {"min value": 0,
-             "max value": 100}],
-        "Output_5_Limit":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ_WRITE],
-            {"min value": 0,
-             "max value": 100}],
-        "Output_6_Limit":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ_WRITE],
-            {"min value": 0,
-             "max value": 100}],
-        "Output_7_Limit":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ_WRITE],
-            {"min value": 0,
-             "max value": 100}],
-        "Output_8_Limit":
-            [[PyTango.DevShort, 
-            PyTango.SCALAR, 
-            PyTango.READ_WRITE],
-            {"min value": 0,
-             "max value": 100}],                                                                                                                                                                                         
+        #"Output_1":
+            #[[PyTango.DevShort, 
+            #PyTango.SCALAR, 
+            #PyTango.READ]],
+        #"Output_1_Limit":
+            #[[PyTango.DevShort, 
+            #PyTango.SCALAR, 
+            #PyTango.READ_WRITE],
+            #{"min value": 0,
+             #"max value": 100}],
+        #"Program_1":
+            #[[PyTango.DevDouble, 
+            #PyTango.IMAGE, 
+            #PyTango.READ_WRITE, 3, 64]], 
+        #"Program_1_Params":
+            #[[PyTango.DevDouble, 
+            #PyTango.SPECTRUM, 
+            #PyTango.READ, 4]],
+        #"Program_1_Zones":
+            #[[PyTango.DevShort, 
+            #PyTango.SPECTRUM, 
+            #PyTango.READ_WRITE, 8]],
+        #"Temperature_1":
+            #[[PyTango.DevDouble, 
+            #PyTango.SCALAR, 
+            #PyTango.READ]],
         "Pressure":
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
@@ -1921,102 +1036,6 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
             PyTango.READ_WRITE]],
-        "Program_1":
-            [[PyTango.DevDouble, 
-            PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3, 64]], 
-        "Program_2":
-            [[PyTango.DevDouble, 
-            PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3, 64]], 
-        "Program_3":
-            [[PyTango.DevDouble, 
-            PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3, 64]], 
-        "Program_4":
-            [[PyTango.DevDouble, 
-            PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3, 64]], 
-        "Program_5":
-            [[PyTango.DevDouble, 
-            PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3, 64]], 
-        "Program_6":
-            [[PyTango.DevDouble, 
-            PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3, 64]], 
-        "Program_7":
-            [[PyTango.DevDouble, 
-            PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3, 64]], 
-        "Program_8":
-            [[PyTango.DevDouble, 
-            PyTango.IMAGE, 
-            PyTango.READ_WRITE, 3, 64]],
-        "Program_1_Zones":
-            [[PyTango.DevShort, 
-            PyTango.SPECTRUM, 
-            PyTango.READ_WRITE, 8]],
-        "Program_2_Zones":
-            [[PyTango.DevShort, 
-            PyTango.SPECTRUM, 
-            PyTango.READ_WRITE, 8]], 
-        "Program_3_Zones":
-            [[PyTango.DevShort, 
-            PyTango.SPECTRUM, 
-            PyTango.READ_WRITE, 8]], 
-        "Program_4_Zones":
-            [[PyTango.DevShort, 
-            PyTango.SPECTRUM, 
-            PyTango.READ_WRITE, 8]], 
-        "Program_5_Zones":
-            [[PyTango.DevShort, 
-            PyTango.SPECTRUM, 
-            PyTango.READ_WRITE, 8]],             
-        "Program_6_Zones":
-            [[PyTango.DevShort, 
-            PyTango.SPECTRUM, 
-            PyTango.READ_WRITE, 8]], 
-        "Program_7_Zones":
-            [[PyTango.DevShort, 
-            PyTango.SPECTRUM, 
-            PyTango.READ_WRITE, 8]], 
-        "Program_8_Zones":
-            [[PyTango.DevShort, 
-            PyTango.SPECTRUM, 
-            PyTango.READ_WRITE, 8]],                 
-        "Program_1_Params":
-            [[PyTango.DevDouble, 
-            PyTango.SPECTRUM, 
-            PyTango.READ, 4]],
-        "Program_2_Params":
-            [[PyTango.DevDouble, 
-            PyTango.SPECTRUM, 
-            PyTango.READ, 4]], 
-        "Program_3_Params":
-            [[PyTango.DevDouble, 
-            PyTango.SPECTRUM, 
-            PyTango.READ, 4]], 
-        "Program_4_Params":
-            [[PyTango.DevDouble, 
-            PyTango.SPECTRUM, 
-            PyTango.READ, 4]], 
-        "Program_5_Params":
-            [[PyTango.DevDouble, 
-            PyTango.SPECTRUM, 
-            PyTango.READ, 4]],             
-        "Program_6_Params":
-            [[PyTango.DevDouble, 
-            PyTango.SPECTRUM, 
-            PyTango.READ, 4]], 
-        "Program_7_Params":
-            [[PyTango.DevDouble, 
-            PyTango.SPECTRUM, 
-            PyTango.READ, 4]], 
-        "Program_8_Params":
-            [[PyTango.DevDouble, 
-            PyTango.SPECTRUM, 
-            PyTango.READ, 4]],            
         "Temperature_All":
             [[PyTango.DevDouble, 
             PyTango.SPECTRUM, 
@@ -2029,38 +1048,6 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
             [[PyTango.DevDouble, 
             PyTango.SCALAR, 
             PyTango.READ_WRITE]],
-        "Temperature_1":
-            [[PyTango.DevDouble, 
-            PyTango.SCALAR, 
-            PyTango.READ]],
-        "Temperature_2":
-            [[PyTango.DevDouble, 
-            PyTango.SCALAR, 
-            PyTango.READ]], 
-        "Temperature_3":
-            [[PyTango.DevDouble, 
-            PyTango.SCALAR, 
-            PyTango.READ]], 
-        "Temperature_4":
-            [[PyTango.DevDouble, 
-            PyTango.SCALAR, 
-            PyTango.READ]], 
-        "Temperature_5":
-            [[PyTango.DevDouble, 
-            PyTango.SCALAR, 
-            PyTango.READ]],             
-        "Temperature_6":
-            [[PyTango.DevDouble, 
-            PyTango.SCALAR, 
-            PyTango.READ]], 
-        "Temperature_7":
-            [[PyTango.DevDouble, 
-            PyTango.SCALAR, 
-            PyTango.READ]], 
-        "Temperature_8":
-            [[PyTango.DevDouble, 
-            PyTango.SCALAR, 
-            PyTango.READ]]           
         }
 
 #------------------------------------------------------------------------------ 
@@ -2072,6 +1059,11 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
         print "In BakeOutControlDSClass constructor"
 
 #    __init__()
+
+    def dyn_attr(self,dev_list):
+        print 'In BakeOutControlDSClass.dyn_attr(%s)'%dev_list
+        for dev in dev_list:
+            dev.dyn_attr()
  
 #BakeOutControlDSClass()
  
