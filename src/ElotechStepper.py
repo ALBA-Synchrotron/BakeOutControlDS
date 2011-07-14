@@ -120,18 +120,31 @@ class Controller(threading.Thread):
     
     def run(self):            
         while ( True ):      
-            print "In Controller(%s).run(), at %s"%(self.device().get_name(),time.ctime())
+            print "In Controller(%s).run(), at %s, waiting for commands ..."%(self.device().get_name(),time.ctime())
             programNo,command = None,None
             try:
                 programNo, command = self.queue().get()
-                print "\t%s,%s"%(programNo,command)
+                print "In Controller(%s).run(%s,%s)"%(self.device().get_name(),programNo,command)
                 if ( command == ControllerCommand.STOP ):
+                    print '\tReceived an STOP(%s) command'%programNo
                     for progNo in (programNo and (programNo,) or range(1, self.programCount() + 1)):
                         if ( self.isRunning(progNo) ):
                             print "\t", time.strftime("%H:%M:%S"), "%s: Stopping bakeout program %d" % (self.getName(), progNo)                
                             self.setProgram(progNo, None)
                             self.event(progNo).set()
-                elif ( command == ControllerCommand.START ):               
+                        else: 
+                            # Elotech Zones will be stop if are not managed by any program!
+                            print '\tProgram %d is not running, checking for active zones'%progNo
+                            pzones = [z for k in range(1,self.device().zoneCount()+1) for z in self.device().zones(k) if self.isRunning(k)]
+                            if progNo in pzones: 
+                                print '\tZone %d is managed by a program, it must be stop using a program number'%progNo
+                            else:
+                                print '='*80
+                                print 'Controller(%s).STOP(%d): Switching OFF zone'%(self.device().get_name(),progNo)
+                                self.device().SendCommand([1, progNo,"%02X" % ElotechInstruction.ACPT,"%02X" % ElotechParameter.ZONE_ON_OFF,0])
+                                print '='*80
+                elif ( command == ControllerCommand.START ):
+                    print '\tReceived an START command'
                     flatProgram = self.device().program(programNo)
                     if ( flatProgram == PROGRAM_DEFAULT ):
                         print "\t", time.strftime("%H:%M:%S"), "Err: Program %d not saved" % programNo
@@ -145,13 +158,18 @@ class Controller(threading.Thread):
                             self.setProgram(programNo, program)
                             program = self.program(programNo)
                             if ( program ):
-                                step = program.pop()
-                                stepper = Stepper(self, programNo, step, zones)
-                                self.setStepper(programNo, stepper)
-                                stepper.start()
+                                if self.stepper(programNo) and self.stepper(programNo).isAlive():
+                                    print 'PROGRAM %d SHOULD BE STOP BEFORE A NEW START'%programNo
+                                else:
+                                    step = program.pop()
+                                    stepper = Stepper(self, programNo, step, zones)
+                                    self.setStepper(programNo, stepper)
+                                    stepper.start()
                 elif ( command == ControllerCommand.PAUSE ):
+                    print '\tReceived a PAUSE command'
                     raise NotImplementedError
                 elif ( command == ControllerCommand.FEED ):
+                    print '\tReceived a FEED command'
                     program = self.program(programNo)
                     if ( program ):
                         print "\t", time.strftime("%H:%M:%S"), "%s: Feeding program %d stepper with:" % (self.getName(), programNo),                
@@ -280,6 +298,7 @@ class Stepper(threading.Thread):
                 while not self.isFinished() and time.time()<(t0+timeout) and not self.event().is_set():
                     #The configuration will be verified every 60 seconds
                     try:
+                        check = False
                         for zone in self.zones():
                             if not params[1]:
                                 print '\tSending %d ramp parameters'%zone
@@ -294,8 +313,9 @@ class Stepper(threading.Thread):
                                 ans = self.device().threadDict.get((1,zone,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.ZONE_ON_OFF))
                                 on = ans and bool(int(ans[11:13]))
                                 if not on or sp!=temp:
-                                    print 'WARNING: The channel %d conditions (%s,%s) doesnt match with program (%s)!'%(on,sp,temp)
-                                    self.device().CheckStatus(alarm=True)
+                                    print 'WARNING: The channel %d conditions (%s,%s) doesnt match with program (%s)!'%(on,sp,temp,self.programNo())
+                                    check = True
+                        if check: self.device().CheckStatus(alarm=True)
                             
                         #Starting the bakeout
                         if not params[1]:
