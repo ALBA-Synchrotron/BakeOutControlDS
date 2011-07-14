@@ -383,6 +383,8 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             if ( dataSet.intersection(otherSet) ):
                 dataSet.difference_update(otherSet)
         self.setZones(programNo, sorted(dataSet))
+        if not all(z in self.zones(programNo) for z in data):
+            raise Exception('Zones already assigned!')
 
     ###########################################################################
 
@@ -763,7 +765,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                     code = "%02X" % ElotechParameter.ZONE_ON_OFF
                     for zone in range(1, self.zoneCount() + 1):
                         ans = self.threadDict.get((device, zone, instruction, code))
-                        if ( ans ):
+                        if ans and len(ans)>11:
                             status[zone - 1] = [bool(int(ans[11:13])), False, 0]
                         else: self.error_count+=1
                     for programNo in range(1, self.zoneCount() + 1):
@@ -855,9 +857,11 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                     else:
                         package = []
                         for i,c in enumerate(command):
-                            if ( i < 2 ): package.append("%02X" % int(c))
-                            elif ( i < 4 ): package.append(c)
-                            elif ( i == 4 ): package.append(self.elotech_value(c))
+                            if i in (0,1): package.append("%02X" % int(c))
+                            elif i in (2,3): package.append(c)
+                            elif ( i == 4 ): package.extend(self.elotech_value(c))
+                            else: raise ValueError #package.append(c)
+                        if self.Trace: print '\tSending %s'%package
                         package.append(self.elotech_checksum(package))
                         sndCmd = "\n" + "".join(package) + "\r"
                         if self.Trace: "\tSend block: %s" % sndCmd.strip()
@@ -868,7 +872,9 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                         if ( ans ):
                             try:
                                 if self.Trace: print "\tRecv block: %s" % ans.strip()
-                                err =  ElotechError.whatis(int(ans[7:9], 16)) if len(ans)>7 else ans ##It will raise KeyError if no error is found
+                                ##This will raise KeyError if no error is found
+                                if len(ans)>7: err =  ElotechError.whatis(int(ans[7:9], 16)) 
+                                else: err = ans
                                 msg = 'SendCommandException:%s'%(err)
                                 if not retries: raise Exception(msg)
                                 else: print 'Exception(%s): %d retries left'%(msg,retries)
@@ -902,21 +908,28 @@ class BakeOutControlDS(PyTango.Device_4Impl):
     def Start(self, programNo):
         print "In " + self.get_name() + ".Start()"
         try:
+            prog,zones = self.program(programNo),self.zones(programNo)
+            if prog == PROGRAM_DEFAULT or not zones:
+                raise Exception('Program or Zones not saved')
+            if self.controller().isRunning(programNo):
+                raise Exception('PROGRAM %d SHOULD BE STOP BEFORE A NEW START'%programNo)
             self.update_program_properties()
             self.queue().put((programNo, ControllerCommand.START))
-        except:
+        except Exception,e:
             print traceback.format_exc()
+            raise Exception('Unable to Start program %s: %s' % (programNo,e))
             
     
 #------------------------------------------------------------------------------ 
 #    Stop command
 #
-#    Description:
+#    Description: Stops the given programs, or all if zone==0
 #
 #------------------------------------------------------------------------------ 
-    def Stop(self, zone):
-        print "In " + self.get_name() + ".Stop()"
-        self.queue().put((zone, ControllerCommand.STOP))
+    def Stop(self, program):
+        print "In " + self.get_name() + ".Stop(%s)"%program
+        if program<0: [self.Stop(z) for z in range(1,self.zoneCount()+1)]
+        else: self.queue().put((program, ControllerCommand.STOP)) #It will stop all programs for program==0
 
 #===============================================================================
 #
