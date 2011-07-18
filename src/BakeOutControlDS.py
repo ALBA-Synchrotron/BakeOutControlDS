@@ -404,7 +404,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         """
         for i in range(1,self.NChannels+1):
             #"Output_1":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ]],
-            attrib,format,unit = PyTango.Attr('Output_%d'%((i)),PyTango.DevShort, PyTango.READ),'%1.1f','%'
+            attrib,format,unit = PyTango.Attr('Output_%d'%((i)),PyTango.DevShort, PyTango.READ),'%d','%'
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
@@ -412,7 +412,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
             
             #"Output_1_Limit":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ_WRITE],{"min value": 0,"max value": 100}],            
-            attrib,format,unit = PyTango.Attr('Output_%d_Limit'%((i)),PyTango.DevShort, PyTango.READ_WRITE),'%1.1f','%'
+            attrib,format,unit = PyTango.Attr('Output_%d_Limit'%((i)),PyTango.DevShort, PyTango.READ_WRITE),'%d','%'
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_min_value('0'); props.set_max_value('100'); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
@@ -441,7 +441,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
             
             #"Temperature_1":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ]],
-            attrib,format,unit = PyTango.Attr('Temperature_%d'%((i)),PyTango.DevDouble, PyTango.READ),'%1.1f',''
+            attrib,format,unit = PyTango.Attr('Temperature_%d'%((i)),PyTango.DevDouble, PyTango.READ),'%d',''
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
@@ -449,7 +449,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
                 
             #"Temperature_1_Setpoint":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ_WRITE]],
-            attrib,format,unit = PyTango.Attr('Temperature_%d_Setpoint'%((i)),PyTango.DevDouble, PyTango.READ),'%1.1f',''
+            attrib,format,unit = PyTango.Attr('Temperature_%d_Setpoint'%((i)),PyTango.DevDouble, PyTango.READ),'%d',''
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
