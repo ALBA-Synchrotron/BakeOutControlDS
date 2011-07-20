@@ -301,7 +301,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             raise Exception("UnknownController: %s" % self.ControllerType)
         
         ans = self.threadDict.get((device, zone, instruction, code))
-        if ( ans ): 
+        if ( ans ) and len(ans)>13: 
             error_count,data = 0,float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
         else:
             self.error_count+=1
