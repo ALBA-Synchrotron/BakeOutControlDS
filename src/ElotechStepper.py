@@ -286,62 +286,80 @@ class Stepper(threading.Thread):
             params = self.params()
             self._sTemp = params[0] = self.maxDiff(self.temp(), self.zones())
             while ( not self.isFinished() ):
-                print "\tIn Stepper(%s).run(%s): %s" % (self.getName(), time.strftime("%H:%M:%S"), self._step)
+                print "\tIn Stepper(%s).run(%s): %s" % (self.device().get_name(), time.strftime("%H:%M:%S"), self._step)
                 temp = self.temp()
                 ramp = self.ramp()
                 timeout = 60. * (60. * self.time() + abs(self.startTemp() - temp) / ramp)
                 
                 self.setStartTemp(temp)
                 t0 = time.time()
-                print "\t", time.strftime("%H:%M:%S"), "%s: Baking zones %s for %f minutes" % (self.getName(), self.zones(), timeout / 60. )
+                print "\t", time.strftime("%H:%M:%S"), "Stepper(%s): Baking zones %s for %f minutes" % (self.device().get_name(), self.zones(), timeout / 60. )
                 
+                if temp:
+                    #Sending the temp,ramp parameters for the received step
+                    for zone in self.zones():
+                        print '\tSending %d ramp parameters'%zone
+                        ramp_command = [1, zone,"%02X" % ElotechInstruction.ACPT,"%02X" % ElotechParameter.RAMP,ramp]
+                        self.execute(ramp_command)
+                        print '\tSending zone %d temperature setpoints'%zone
+                        temp_command = [1, zone,"%02X" % ElotechInstruction.ACPT,"%02X" % ElotechParameter.SETPOINT,temp]
+                        self.execute(temp_command)
+                        
+                #Starting the bakeout
+                if temp and not params[1]:
+                    print '\tStarting the bakeout!'
+                    params[1] = time.time()
+                    params[2] = 0.
+                    params[3] = 0.
+                    self.setParams(params)
+                    for zone in self.zones():
+                        start_command = [1, zone,
+                                    "%02X" % ElotechInstruction.ACPT,
+                                    "%02X" % ElotechParameter.ZONE_ON_OFF,
+                                    1]
+                        self.execute(start_command)
+                #Stopping the Bakeout
+                elif temp<=0:
+                    print 'Stepper: Switching OFF zones: %s'%(self.zones())
+                    for zone in self.zones():
+                        stop_command = [1, zone,
+                                        "%02X" % ElotechInstruction.ACPT,
+                                        "%02X" % ElotechParameter.ZONE_ON_OFF,
+                                        0]
+                        self.execute(stop_command)
+
                 while not self.isFinished() and time.time()<(t0+timeout) and not self.event().is_set():
+                    #This while will be waiting here until timeout time is reached
                     #The configuration will be verified every 60 seconds
                     try:
                         check = False
-                        for zone in self.zones():
-                            if not params[1]:
-                                print '\tSending %d ramp parameters'%zone
-                                ramp_command = [1, zone,"%02X" % ElotechInstruction.ACPT,"%02X" % ElotechParameter.RAMP,ramp]
-                                self.execute(ramp_command)
-                                print '\tSending zone %d temperature setpoints'%zone
-                                temp_command = [1, zone,"%02X" % ElotechInstruction.ACPT,"%02X" % ElotechParameter.SETPOINT,temp]
-                                self.execute(temp_command)
-                            else:
-                                print '\tChecking %d zone temperature setpoints'%zone
-                                sp = self.device().temperatureSpAttr(zone)
-                                ans = self.device().threadDict.get((1,zone,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.ZONE_ON_OFF))
-                                on = ans and bool(int(ans[11:13]))
-                                if not on or sp!=temp:
-                                    print 'WARNING: The channel %d conditions (%s,%s) doesnt match with program (%s)!'%(on,sp,temp,self.programNo())
-                                    check = True
+                        if params[1] and time.time()>t0+60.: #waiting one minute to allow the controller to update setpoints
+                            try:
+                                print '\tEllapsed %2.1f %% of step (%s,%s,%s),\n\tChecking %d zones temperature setpoints ...'%(100*(time.time()-t0)/timeout,temp,ramp,timeout,len(self.zones()))
+                                for zone in self.zones():
+                                    sp = self.device().temperatureSpAttr(zone)
+                                    ans = self.device().threadDict.get((1,zone,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.ZONE_ON_OFF))
+                                    on = ans and bool(int(ans[11:13]))
+                                    if not on or sp!=temp:
+                                        print 'WARNING: The channel %d conditions (%s,%s) doesnt match with program (%s)!'%(on,sp,temp,self.programNo())
+                                        check = True
+                            except:
+                                print 'Exception in %s.Stepper(%s,%s) at %s' % (self.device().get_name(),self._step,self.zones(),time.ctime())
+                                print traceback.format_exc()
+                                check = True
                         if check: self.device().CheckStatus(alarm=True)
-                            
-                        #Starting the bakeout
-                        if not params[1]:
-                            print '\tStarting the bakeout!'
-                            params[1] = time.time()
-                            params[2] = 0.
-                            params[3] = 0.
-                            self.setParams(params)
-                            for zone in self.zones():
-                                start_command = [1, zone,
-                                            "%02X" % ElotechInstruction.ACPT,
-                                            "%02X" % ElotechParameter.ZONE_ON_OFF,
-                                            1]
-                                self.execute(start_command)
                     except:
                         print 'Exception in %s.Stepper(%s,%s) at %s' % (self.device().get_name(),self._step,self.zones(),time.ctime())
                         print traceback.format_exc()
                     self.event().wait(60.)
                 #Step finished, waiting for commands
                 self.event().clear()
-                print "\t", time.strftime("%H:%M:%S"), "%s: Awaiting feed" % self.getName()
+                print "\t", time.strftime("%H:%M:%S"), "%s: Awaiting feed" % self.device().get_name()
                 self.feed()
                 self.event().wait()
                 self.event().clear()
             #Bakeout finished
-            print "\t", time.strftime("%H:%M:%S"), "%s: Stopping bakeout stepper" % self.getName()
+            print "\t", time.strftime("%H:%M:%S"), "%s: Stopping bakeout stepper" % self.device().get_name()
         except:
             print traceback.format_exc()
             msg = 'Stepper(%s).run: unable to process step(%s,%s,%s)'%(self.programNo(),self.temp(),self.ramp(),self.time())
@@ -351,13 +369,14 @@ class Stepper(threading.Thread):
         finally:
             try:
                 if params[1] and self.isFinished():
-                    print 'Stepper: Switching OFF zones: %s'%(self.zones())
-                    for zone in self.zones():
-                        stop_command = [1, zone,
-                                        "%02X" % ElotechInstruction.ACPT,
-                                        "%02X" % ElotechParameter.ZONE_ON_OFF,
-                                        0]
-                        self.execute(stop_command)
+                    print '%s.Stepper(%s): Finished, but NOT Switching OFF zones automatically, option disabled'%(self.device().get_name(),self.programNo())
+                    #print 'Stepper: Switching OFF zones: %s'%(self.zones())
+                    #for zone in self.zones():
+                        #stop_command = [1, zone,
+                                        #"%02X" % ElotechInstruction.ACPT,
+                                        #"%02X" % ElotechParameter.ZONE_ON_OFF,
+                                        #0]
+                        #self.execute(stop_command)
                 else:
                     print 'Stepper program EXITED BUT NOT FINISHED!!!!'
             except:
@@ -367,5 +386,5 @@ class Stepper(threading.Thread):
             self.setParams(params)
             self.device().update_program_properties()
             
-        print "\t", time.strftime("%H:%M:%S"), "%s: Done" % self.getName()
+        print "\t", time.strftime("%H:%M:%S"), "%s: Done" % self.device().get_name()
 
