@@ -396,11 +396,13 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         for key, value in props.items():
             print "\tUpdating property %s = %s" % (key, value)
             self.db.put_device_property(self.get_name(), {key:isinstance(value, list) and value or [value]})
-      
+    
+    @staticmethod
     def dyn_attr(self):
         """
         It is called after init_device in the Tango layer side.
         It creates the attributes needed to manage each channel (8 by default).
+        It must be an static method, and lambdas are used to bound the device to the method and avoid attribute mismatching between devices in a server
         """
         for i in range(1,self.NChannels+1):
             #"Output_1":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ]],
@@ -408,7 +410,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
-            rfun = (lambda s,a,index=i: self.outputAttr(index,a))
+            rfun = (lambda x,a,index=i,s=self: s.outputAttr(index,a))
             self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
             
             #"Output_1_Limit":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ_WRITE],{"min value": 0,"max value": 100}],            
@@ -416,28 +418,28 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_min_value('0'); props.set_max_value('100'); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
-            rfun = (lambda s,a,index=i: self.limitAttr(index,a))
-            wfun = (lambda s,a,index=i: self.setLimitAttr(index,attr))
+            rfun = (lambda x,a,index=i,s=self: s.limitAttr(index,a))
+            wfun = (lambda x,a,index=i,s=self: s.setLimitAttr(index,attr))
             self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
             
             #"Program_1":[[PyTango.DevDouble, PyTango.IMAGE, PyTango.READ_WRITE, 3, 64]], 
             attrib = PyTango.ImageAttr('Program_%d'%((i)),PyTango.DevDouble, PyTango.READ_WRITE,3,64)
             print 'Creating attribute %s ...'%attrib
-            rfun = (lambda s,a,index=i: self.programAttr(index,a))
-            wfun = (lambda s,a,index=i: self.setProgramAttr(index,a))
+            rfun = (lambda x,a,index=i,s=self: s.programAttr(index,a))
+            wfun = (lambda x,a,index=i,s=self: s.setProgramAttr(index,a))
             self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
             
             #"Program_1_Params":[[PyTango.DevDouble, PyTango.SPECTRUM, PyTango.READ, 4]],
             attrib = PyTango.SpectrumAttr('Program_%d_Params'%((i)),PyTango.DevDouble, PyTango.READ,4)
             print 'Creating attribute %s ...'%attrib
-            rfun = (lambda s,a,index=i: self.paramsAttr(index,a))
+            rfun = (lambda x,a,index=i,s=self: s.paramsAttr(index,a))
             self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
             
             #"Program_1_Zones":[[PyTango.DevShort, PyTango.SPECTRUM, PyTango.READ_WRITE, 8]],
             attrib = PyTango.SpectrumAttr('Program_%d_Zones'%((i)),PyTango.DevShort, PyTango.READ_WRITE,8)
             print 'Creating attribute %s ...'%attrib
-            rfun = (lambda s,a,index=i: self.zonesAttr(index,a))
-            wfun = (lambda s,a,index=i: self.setZonesAttr(index,a))
+            rfun = (lambda x,a,index=i,s=self: s.zonesAttr(index,a))
+            wfun = (lambda x,a,index=i,s=self: s.setZonesAttr(index,a))
             self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
             
             #"Temperature_1":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ]],
@@ -445,7 +447,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
-            rfun = (lambda s,a,index=i: self.temperatureAttr(index,a))
+            rfun = (lambda x,a,index=i,s=self: self.temperatureAttr(index,a))
             self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
                 
             #"Temperature_1_Setpoint":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ_WRITE]],
@@ -453,7 +455,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
-            rfun = (lambda s,a,index=i: self.temperatureSpAttr(index,a))
+            rfun = (lambda x,a,index=i,s=self: s.temperatureSpAttr(index,a))
             #wfun = (lambda s,a,index=i: self.setTemperatureSpAttr(index,a))
             self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
             
@@ -1076,7 +1078,7 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
     def dyn_attr(self,dev_list):
         print 'In BakeOutControlDSClass.dyn_attr(%s)'%dev_list
         for dev in dev_list:
-            dev.dyn_attr()
+            DynamicDS.dyn_attr(dev)
  
 #BakeOutControlDSClass()
  
