@@ -42,6 +42,8 @@ from ElotechStepper import *
 
 MAX_ERRORS = 5
 
+USE_STATIC_METHODS = getattr(PyTango,'__version_number__',0)<722
+
 #===============================================================================
 # BakeOutControllDS Class Description
 #
@@ -396,8 +398,65 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         for key, value in props.items():
             print "\tUpdating property %s = %s" % (key, value)
             self.db.put_device_property(self.get_name(), {key:isinstance(value, list) and value or [value]})
+            
+    def dyn_attr_allowed(self,req_type):
+        """
+        Attrs should be always readable, the quality of the attr will change if needed
+        """
+        return True
+    if USE_STATIC_METHODS: dyn_attr_allowed = staticmethod(dyn_attr_allowed)
+            
+    def read_dyn_attr(self,attr,WRITE=False):
+        """
+        This is the method where you control the value assignt to each dynamic attribute
+        Output, Output_Limit, Temperature, Temperature_SetPoint, Program, Program_Params, Program_Zones, 
+        """
+        attr_name = attr.get_name()
+        key = attr_name.split('_')[0]
+        index = int(attr_name.split('_')[1])
+        param = attr_name.split('_')[-1] if attr_name.count('_')>2 else ''
+        value = None
+        print '%s: %s: %s attribute %s: (%s,%s,%s)' % (time.ctime(),self.get_name(),'Reading' if not WRITE else 'Writing',attr_name,key,index,param)
+        if key=='Output':
+            if not param: 
+                self.outputAttr(index,attr)
+            elif param=='Limit': 
+                if not WRITE: self.limitAttr(index,attr)
+                else: self.setLlimitAttr(index,attr)
+            else: raise Exception('UnkownAttribute_%s'%attr_name)
+        elif key=='Program':
+            if not param: 
+                if not WRITE: self.programAttr(index,attr)
+                else: self.setProgramAttr(index,attr)
+            elif param=='Params': 
+                self.paramsAttr(index,attr)
+            elif param=='Zones': 
+                if not WRITE: self.zonesAttr(index,attr)
+                else: self.setZonesAttr(index,attr)
+            else: raise Exception('UnkownAttribute_%s'%attr_name)
+        elif key=='Temperature':
+            if not param:
+                self.temperatureAttr(index,attr)
+            elif param=='SetPoint': 
+                if not WRITE: self.temperatureSpAttr(index,attr)
+                else: self.setTemperatureSpAttr(index,attr)
+            else: raise Exception('UnkownAttribute_%s'%attr_name)
+        else: raise Exception('UnkownAttribute_%s'%attr_name)
+        return
+            
+    def write_dyn_attr(self,attr):
+        """
+        This is the method where you control the value assignt to each dynamic attribute
+        Output, Output_Limit, Temperature, Temperature_SetPoint, Program, Program_Params, Program_Zones, 
+        """
+        if USE_STATIC_METHODS: self.read_dyn_attr(self,attr,WRITE=True)
+        else: self.read_dyn_attr(attr,WRITE=True)
+        
+    if USE_STATIC_METHODS: 
+        read_dyn_attr = staticmethod(read_dyn_attr)
+        write_dyn_attr = staticmethod(write_dyn_attr)
     
-    @staticmethod
+    #@staticmethod
     def dyn_attr(self):
         """
         It is called after init_device in the Tango layer side.
@@ -410,54 +469,43 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
-            rfun = (lambda x,a,index=i,s=self: s.outputAttr(index,a))
-            self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
+            self.add_attribute(attrib,self.read_dyn_attr,None,self.dyn_attr_allowed)
             
             #"Output_1_Limit":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ_WRITE],{"min value": 0,"max value": 100}],            
             attrib,format,unit = PyTango.Attr('Output_%d_Limit'%((i)),PyTango.DevShort, PyTango.READ_WRITE),'%d','%'
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_min_value('0'); props.set_max_value('100'); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
-            rfun = (lambda x,a,index=i,s=self: s.limitAttr(index,a))
-            wfun = (lambda x,a,index=i,s=self: s.setLimitAttr(index,attr))
-            self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
+            self.add_attribute(attrib,self.read_dyn_attr,self.write_dyn_attr,self.dyn_attr_allowed)
             
             #"Program_1":[[PyTango.DevDouble, PyTango.IMAGE, PyTango.READ_WRITE, 3, 64]], 
             attrib = PyTango.ImageAttr('Program_%d'%((i)),PyTango.DevDouble, PyTango.READ_WRITE,3,64)
             print 'Creating attribute %s ...'%attrib
-            rfun = (lambda x,a,index=i,s=self: s.programAttr(index,a))
-            wfun = (lambda x,a,index=i,s=self: s.setProgramAttr(index,a))
-            self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
+            self.add_attribute(attrib,self.read_dyn_attr,self.write_dyn_attr,self.dyn_attr_allowed)
             
             #"Program_1_Params":[[PyTango.DevDouble, PyTango.SPECTRUM, PyTango.READ, 4]],
             attrib = PyTango.SpectrumAttr('Program_%d_Params'%((i)),PyTango.DevDouble, PyTango.READ,4)
             print 'Creating attribute %s ...'%attrib
-            rfun = (lambda x,a,index=i,s=self: s.paramsAttr(index,a))
-            self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
+            self.add_attribute(attrib,self.read_dyn_attr,None,self.dyn_attr_allowed)
             
             #"Program_1_Zones":[[PyTango.DevShort, PyTango.SPECTRUM, PyTango.READ_WRITE, 8]],
             attrib = PyTango.SpectrumAttr('Program_%d_Zones'%((i)),PyTango.DevShort, PyTango.READ_WRITE,8)
             print 'Creating attribute %s ...'%attrib
-            rfun = (lambda x,a,index=i,s=self: s.zonesAttr(index,a))
-            wfun = (lambda x,a,index=i,s=self: s.setZonesAttr(index,a))
-            self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
+            self.add_attribute(attrib,self.read_dyn_attr,self.write_dyn_attr,self.dyn_attr_allowed)
             
             #"Temperature_1":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ]],
             attrib,format,unit = PyTango.Attr('Temperature_%d'%((i)),PyTango.DevDouble, PyTango.READ),'%d',''
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
-            rfun = (lambda x,a,index=i,s=self: self.temperatureAttr(index,a))
-            self.add_attribute(attrib,rfun,None,(lambda s,req_type,index=i: True))
+            self.add_attribute(attrib,self.read_dyn_attr,None,self.dyn_attr_allowed)
                 
             #"Temperature_1_Setpoint":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ_WRITE]],
             attrib,format,unit = PyTango.Attr('Temperature_%d_Setpoint'%((i)),PyTango.DevDouble, PyTango.READ),'%d',''
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
-            rfun = (lambda x,a,index=i,s=self: s.temperatureSpAttr(index,a))
-            #wfun = (lambda s,a,index=i: self.setTemperatureSpAttr(index,a))
-            self.add_attribute(attrib,rfun,wfun,(lambda s,req_type,index=i: True))
+            self.add_attribute(attrib,self.read_dyn_attr,self.write_dyn_attr,self.dyn_attr_allowed)
             
             print "%s.dyn_attr() finished" % (self.get_name())
             
@@ -1078,7 +1126,8 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
     def dyn_attr(self,dev_list):
         print 'In BakeOutControlDSClass.dyn_attr(%s)'%dev_list
         for dev in dev_list:
-            DynamicDS.dyn_attr(dev)
+            #dev.dyn_attr()
+            BakeOutControlDS.dyn_attr(dev)
  
 #BakeOutControlDSClass()
  
