@@ -411,33 +411,33 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         This is the method where you control the value assignt to each dynamic attribute
         Output, Output_Limit, Temperature, Temperature_SetPoint, Program, Program_Params, Program_Zones, 
         """
-        attr_name = attr.get_name()
+        attr_name = attr.get_name().lower()
         key = attr_name.split('_')[0]
         index = int(attr_name.split('_')[1])
         param = attr_name.split('_')[-1] if attr_name.count('_')>=2 else ''
         value = None
         print '%s: %s: %s attribute %s: (%s,%s,%s)' % (time.ctime(),self.get_name(),'Reading' if not WRITE else 'Writing',attr_name,key,index,param)
-        if key=='Output':
+        if key=='output':
             if not param: 
                 self.outputAttr(index,attr)
-            elif param=='Limit': 
+            elif param=='limit': 
                 if not WRITE: self.limitAttr(index,attr)
                 else: self.setLlimitAttr(index,attr)
             else: raise Exception('UnkownAttribute_%s'%attr_name)
-        elif key=='Program':
+        elif key=='program':
             if not param: 
                 if not WRITE: self.programAttr(index,attr)
                 else: self.setProgramAttr(index,attr)
-            elif param=='Params': 
+            elif param=='params': 
                 self.paramsAttr(index,attr)
-            elif param=='Zones': 
+            elif param=='zones': 
                 if not WRITE: self.zonesAttr(index,attr)
                 else: self.setZonesAttr(index,attr)
             else: raise Exception('UnkownAttribute_%s'%attr_name)
-        elif key=='Temperature':
+        elif key=='temperature':
             if not param:
                 self.temperatureAttr(index,attr)
-            elif param=='SetPoint': 
+            elif param=='setpoint': 
                 if not WRITE: self.temperatureSpAttr(index,attr)
                 else: self.setTemperatureSpAttr(index,attr)
             else: raise Exception('UnkownAttribute_%s'%attr_name)
