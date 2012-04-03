@@ -414,7 +414,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         attr_name = attr.get_name()
         key = attr_name.split('_')[0]
         index = int(attr_name.split('_')[1])
-        param = attr_name.split('_')[-1] if attr_name.count('_')>2 else ''
+        param = attr_name.split('_')[-1] if attr_name.count('_')>=2 else ''
         value = None
         print '%s: %s: %s attribute %s: (%s,%s,%s)' % (time.ctime(),self.get_name(),'Reading' if not WRITE else 'Writing',attr_name,key,index,param)
         if key=='Output':
