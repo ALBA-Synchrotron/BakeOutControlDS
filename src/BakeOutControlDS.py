@@ -268,7 +268,10 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         
         ans = self.threadDict.get((device, zone, instruction, code))
         if ( ans ):
-            data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+            try:
+                data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+            except Exception,e:
+                raise Exception,'UnableToParse(%s):%s'%(ans,e)
             if data and -30<data<=1200: self.error_count = 0
             else: data = None
         
