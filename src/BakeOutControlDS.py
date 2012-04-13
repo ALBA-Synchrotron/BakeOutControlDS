@@ -254,6 +254,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         return self._tempAllTime
     
     def temperatureAttr(self, zone, attr=None):
+        data = None
         if self.Trace: print "In " + self.get_name() + ".temperatureAttr(%s)"%zone
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError        
@@ -268,17 +269,16 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         ans = self.threadDict.get((device, zone, instruction, code))
         if ( ans ):
             data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
-            if data: self.error_count = 0
-        else:
-            #data = TEMP_DEFAULT
+            if data and -30<data<=1200: self.error_count = 0
+            else: data = None
+        
+        if data is None:
             self.error_count+=1
             raise Exception,'DataNotReceived'
         
         self.setTemperature(zone, data)
-        
         if ( attr ):
             attr.set_value(data)
-        
         return data
     
     def temps(self):
@@ -690,7 +690,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             data = []                        
             for zone in range(1, self.zoneCount() + 1):
                 ans = self.temperatureAttr(zone)
-                data.append(ans)
+                data.append(ans if -30<ans<=1200 else -1)
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
 
