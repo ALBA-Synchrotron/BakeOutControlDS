@@ -425,7 +425,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                 self.outputAttr(index,attr)
             elif param=='limit': 
                 if not WRITE: self.limitAttr(index,attr)
-                else: self.setLlimitAttr(index,attr)
+                else: self.setLimitAttr(index,attr)
             else: raise Exception('UnkownAttribute_%s'%attr_name)
         elif key=='program':
             if not param: 
