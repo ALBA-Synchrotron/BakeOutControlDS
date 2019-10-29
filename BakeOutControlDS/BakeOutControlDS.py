@@ -128,12 +128,17 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         return "%02X" % res
     
     def elotech_value(self, value):
-        v = Decimal(str(value))
-        v = v.as_tuple()
-        mantissa = "%04X" % int(("-" if v[0] else "") + "".join(map(str, v[1])))
-        exponent = "%02X" % int(self.int2bin(v[2]), 2)        
-        
-        return mantissa[:2], mantissa[-2:], exponent 
+        try:
+            v = Decimal(str(value))
+            v = v.as_tuple()
+            mantissa = "%04X" % int(("-" if v[0] else "") 
+                                    + "".join(map(str, v[1])))
+            exponent = "%02X" % int(self.int2bin(v[2]), 2)        
+            return mantissa[:2], mantissa[-2:], exponent 
+
+        except Exception as e:
+            raise Exception('elotech_value(%s): %s' 
+                            % (value, str(e)))
     
     def init_serial(self):
         self.serialLock.acquire()
@@ -178,6 +183,10 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         if ( self._q ):
             return self._q
         raise AttributeError
+    
+    def ptrace(self,msg):
+        if self.Trace:
+            print(msg)
   
     def setSerial(self, serial):
         self._serial = serial
@@ -191,14 +200,16 @@ class BakeOutControlDS(PyTango.Device_4Impl):
     # Ouputs and Limits attributes
 
     def outputAttr(self, zone, attr):
-        if self.Trace: print "In " + self.get_name() + ".outputAttr(%s)"%zone
+        self.ptrace("In " + self.get_name() + ".outputAttr(%s)"%zone)
+        
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError        
         elif ( self.ControllerType.lower() == "elotech" ):
             device = 1
             instruction = "%02X" % ElotechInstruction.SEND
             code = "%02X" % ElotechParameter.OUTPUT
-            if self.Trace: print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
+            self.ptrace("\tdevice = %s, instruction = %s, code = %s" 
+                        % (device,instruction,code))
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
         ans = self.threadDict.get((device, zone, instruction, code))
@@ -208,21 +219,26 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             data = 0
         
         if ( data ):
-            attr.set_value_date_quality(data, time.time(), PyTango.AttrQuality.ATTR_CHANGING)
+            attr.set_value_date_quality(data, time.time(), 
+                                        PyTango.AttrQuality.ATTR_CHANGING)
         else:
             attr.set_value(data)
             
     def limitAttr(self, zone, attr):
-        if self.Trace: print "In " + self.get_name() + ".limitAttr(%s)"%zone
+        self.ptrace("In " + self.get_name() + ".limitAttr(%s)"%zone)
+        
         if ( self.ControllerType.lower() == "eurotherm" ):
-            raise NotImplementedError        
+            raise NotImplementedError
+        
         elif ( self.ControllerType.lower() == "elotech" ):
             device = 1
             instruction = "%02X" % ElotechInstruction.SEND 
             code = "%02X" % ElotechParameter.OUTPUT_LIMIT
-            if self.Trace: print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
+            self.ptrace("\tdevice = %s, instruction = %s, code = %s"
+                        % (device,instruction,code))
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
+
         ans = self.threadDict.get((device, zone, instruction, code))
         if ( ans ):
             data = int(ans[9:13], 16)
@@ -232,19 +248,23 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         attr.set_value(data)
         
     def setLimitAttr(self, zone, attr):
-        if self.Trace: print "In " + self.get_name() + ".setLimitAttr(%s)"%zone
+        self.ptrace("In " + self.get_name() + ".setLimitAttr(%s)" % zone)
         data = []
         attr.get_write_value(data)
+        
         if ( self.ControllerType.lower() == "eurotherm" ):
-            raise NotImplementedError        
+            raise NotImplementedError
+        
         elif ( self.ControllerType.lower() == "elotech" ):
             device = 1
             instruction = "%02X" % ElotechInstruction.ACPT
             code = "%02X" % ElotechParameter.OUTPUT_LIMIT
-            if self.Trace: print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
+            self.ptrace("\tdevice = %s, instruction = %s, code = %s"
+                        % (device,instruction,code))
             value = data[0]
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
+        
         self.SendCommand([device, zone, instruction, code, value])
         
     ###########################################################################
@@ -255,14 +275,16 @@ class BakeOutControlDS(PyTango.Device_4Impl):
     
     def temperatureAttr(self, zone, attr=None):
         data = None
-        if self.Trace: print "In " + self.get_name() + ".temperatureAttr(%s)"%zone
+        self.ptrace("In " + self.get_name() + ".temperatureAttr(%s)" % zone)
+        
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError        
         elif ( self.ControllerType.lower() == "elotech" ):
             device = 1
             instruction = "%02X" % ElotechInstruction.SEND
             code = "%02X" % ElotechParameter.TEMP
-            if self.Trace: print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
+            self.ptrace("\tdevice = %s, instruction = %s, code = %s"
+                        % (device,instruction,code))
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
         
@@ -298,20 +320,28 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         
     def temperatureSpAttr(self,zone,attr=None):
         if ( self.ControllerType.lower() == "eurotherm" ):
-            raise NotImplementedError        
+            raise NotImplementedError
+        
         elif ( self.ControllerType.lower() == "elotech" ):
-            device,instruction,code = 1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.SETPOINT
-            if self.Trace:  print "\tdevice = %s, instruction = %s, code = %s"%(device,instruction,code)
+            device = 1
+            instruction = "%02X" % ElotechInstruction.SEND
+            code = "%02X" % ElotechParameter.SETPOINT
+            self.ptrace("\tdevice = %s, instruction = %s, code = %s"
+                        % (device,instruction,code))
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
         
         ans = self.threadDict.get((device, zone, instruction, code))
+
         if ( ans ) and len(ans)>13: 
-            error_count,data = 0,float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+            error_count = 0
+            data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
         else:
             self.error_count+=1
             raise Exception,'DataNotReceived'
-        if ( attr ): attr.set_value(data)
+        
+        if ( attr ): 
+            attr.set_value(data)
         return data
         
     def setTempMax(self, tempMax):
@@ -323,10 +353,14 @@ class BakeOutControlDS(PyTango.Device_4Impl):
 
     def update_program_properties(self):
         try:
-            print '%s.update_program_properties(%s)'%(self.get_name(),self._programs.items())
-            PyTango.Util.instance().get_database().put_device_property(self.get_name(),{
-            'Programs':['%d:%s'%(i,','.join(str(f) for f in p)) for i,p in self._programs.items()],
-            'Params':['%d:%s'%(i,','.join(str(f) for f in p)) for i,p in self._pParams.items()]
+            print('%s.update_program_properties(%s)'
+                % (self.get_name(),self._programs.items()))
+            PyTango.Util.instance().get_database().put_device_property(
+                self.get_name(),{
+                'Programs':['%d:%s'%(i,','.join(str(f) for f in p)) 
+                            for i,p in self._programs.items()],
+                'Params':['%d:%s'%(i,','.join(str(f) for f in p)) 
+                          for i,p in self._pParams.items()]
             })
         except:
             print traceback.format_exc()
@@ -384,7 +418,8 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         print "In " + self.get_name() + ".setZonesAttr(%s)"%str(data)
         dataSet = set(data)
         dataSet.intersection_update(i for i in range(1, self.zoneCount() + 1))
-        for otherSet in [self.zones(pNo) for pNo in range(1, self.zoneCount() + 1) if pNo != programNo]:
+        for otherSet in [self.zones(pNo) 
+            for pNo in range(1, self.zoneCount() + 1) if pNo != programNo]:
             if ( dataSet.intersection(otherSet) ):
                 dataSet.difference_update(otherSet)
         self.setZones(programNo, sorted(dataSet))
@@ -394,66 +429,95 @@ class BakeOutControlDS(PyTango.Device_4Impl):
     ###########################################################################
 
     def update_properties(self, property_list=[]):
-        property_list = property_list or self.get_device_class().device_property_list.keys()
+        property_list = property_list or \
+            self.get_device_class().device_property_list.keys()
         if ( not hasattr(self, "db") or not self.db ):
             self.db = PyTango.Database()
-        props = dict([(key, getattr(self, key)) for key in property_list if hasattr(self, key)])
+        props = dict([(key, getattr(self, key)) 
+                for key in property_list if hasattr(self, key)])
+        
         for key, value in props.items():
             print "\tUpdating property %s = %s" % (key, value)
-            self.db.put_device_property(self.get_name(), {key:isinstance(value, list) and value or [value]})
+            self.db.put_device_property(self.get_name(), 
+                {key:isinstance(value, list) and value or [value]})
             
     def dyn_attr_allowed(self,req_type):
         """
-        Attrs should be always readable, the quality of the attr will change if needed
+        Attrs should be always readable, the quality 
+        of the attr will change if needed
         """
         return True
     if USE_STATIC_METHODS: dyn_attr_allowed = staticmethod(dyn_attr_allowed)
             
     def read_dyn_attr(self,attr,WRITE=False):
         """
-        This is the method where you control the value assignt to each dynamic attribute
-        Output, Output_Limit, Temperature, Temperature_SetPoint, Program, Program_Params, Program_Zones, 
+        This is the method where you control the value assignt 
+        to each dynamic attribute:
+        
+        Output, Output_Limit, Temperature, Temperature_SetPoint, 
+        Program, Program_Params, Program_Zones, 
         """
         attr_name = attr.get_name().lower()
         key = attr_name.split('_')[0]
         index = int(attr_name.split('_')[1])
         param = attr_name.split('_')[-1] if attr_name.count('_')>=2 else ''
         value = None
-        print '%s: %s: %s attribute %s: (%s,%s,%s)' % (time.ctime(),self.get_name(),'Reading' if not WRITE else 'Writing',attr_name,key,index,param)
+        print('%s: %s: %s attribute %s: (%s,%s,%s)' % (time.ctime(),
+            self.get_name(),'Reading' if not WRITE else 'Writing',
+            attr_name,key,index,param))
+
         if key=='output':
             if not param: 
                 self.outputAttr(index,attr)
             elif param=='limit': 
                 if not WRITE: self.limitAttr(index,attr)
                 else: self.setLimitAttr(index,attr)
-            else: raise Exception('UnkownAttribute_%s'%attr_name)
+            else: 
+                raise Exception('UnkownAttribute_%s'%attr_name)
+
         elif key=='program':
             if not param: 
-                if not WRITE: self.programAttr(index,attr)
-                else: self.setProgramAttr(index,attr)
+                if not WRITE: 
+                    self.programAttr(index,attr)
+                else: 
+                    self.setProgramAttr(index,attr)
+                    
             elif param=='params': 
                 self.paramsAttr(index,attr)
             elif param=='zones': 
-                if not WRITE: self.zonesAttr(index,attr)
-                else: self.setZonesAttr(index,attr)
-            else: raise Exception('UnkownAttribute_%s'%attr_name)
+                if not WRITE: 
+                    self.zonesAttr(index,attr)
+                else: 
+                    self.setZonesAttr(index,attr)   
+            else: 
+                raise Exception('UnkownAttribute_%s'%attr_name)
+            
         elif key=='temperature':
             if not param:
                 self.temperatureAttr(index,attr)
             elif param=='setpoint': 
-                if not WRITE: self.temperatureSpAttr(index,attr)
-                else: self.setTemperatureSpAttr(index,attr)
-            else: raise Exception('UnkownAttribute_%s'%attr_name)
-        else: raise Exception('UnkownAttribute_%s'%attr_name)
+                if not WRITE: 
+                    self.temperatureSpAttr(index,attr)
+                else: 
+                    self.setTemperatureSpAttr(index,attr)
+            else: 
+                raise Exception('UnkownAttribute_%s'%attr_name)
+        else: 
+            raise Exception('UnkownAttribute_%s'%attr_name)
         return
             
     def write_dyn_attr(self,attr):
         """
-        This is the method where you control the value assignt to each dynamic attribute
-        Output, Output_Limit, Temperature, Temperature_SetPoint, Program, Program_Params, Program_Zones, 
+        This is the method where you control the value assignt 
+        to each dynamic attribute:
+        
+        Output, Output_Limit, Temperature, Temperature_SetPoint, 
+        Program, Program_Params, Program_Zones, 
         """
-        if USE_STATIC_METHODS: self.read_dyn_attr(self,attr,WRITE=True)
-        else: self.read_dyn_attr(attr,WRITE=True)
+        if USE_STATIC_METHODS: 
+            self.read_dyn_attr(self,attr,WRITE=True)
+        else: 
+            self.read_dyn_attr(attr,WRITE=True)
         
     if USE_STATIC_METHODS: 
         read_dyn_attr = staticmethod(read_dyn_attr)
@@ -467,6 +531,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         It must be an static method, and lambdas are used to bound the device to the method and avoid attribute mismatching between devices in a server
         """
         for i in range(1,self.NChannels+1):
+            
             #"Output_1":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ]],
             attrib,format,unit = PyTango.Attr('Output_%d'%((i)),PyTango.DevShort, PyTango.READ),'%d','%'
             print 'Creating attribute %s ...'%attrib
@@ -477,7 +542,8 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             #"Output_1_Limit":[[PyTango.DevShort, PyTango.SCALAR, PyTango.READ_WRITE],{"min value": 0,"max value": 100}],            
             attrib,format,unit = PyTango.Attr('Output_%d_Limit'%((i)),PyTango.DevShort, PyTango.READ_WRITE),'%d','%'
             print 'Creating attribute %s ...'%attrib
-            props = PyTango.UserDefaultAttrProp(); props.set_min_value('0'); props.set_max_value('100'); props.set_format(format); props.set_unit(unit)
+            props = PyTango.UserDefaultAttrProp(); props.set_min_value('0'); 
+            props.set_max_value('100'); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
             self.add_attribute(attrib,self.read_dyn_attr,self.write_dyn_attr,self.dyn_attr_allowed)
             
@@ -580,10 +646,14 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                 print "\tUsing an elotech controller..."
                 self.init_serial()
                 self._zoneCount = 8
-                self._programs = dict.fromkeys((i for i in range(1, self._zoneCount + 1)), PROGRAM_DEFAULT)
-                self._pParams = dict((i, list(PARAMS_DEFAULT)) for i in range(1, self._zoneCount + 1))
-                self._pZones = dict.fromkeys((i for i in range(1, self._zoneCount + 1)), list())
-                self._temps = dict.fromkeys((i for i in range(1, self._zoneCount + 1)), (0,TEMP_DEFAULT))
+                self._programs = dict.fromkeys((i for i in 
+                    range(1, self._zoneCount + 1)), PROGRAM_DEFAULT)
+                self._pParams = dict((i, list(PARAMS_DEFAULT)) 
+                    for i in range(1, self._zoneCount + 1))
+                self._pZones = dict.fromkeys((i for i in 
+                    range(1, self._zoneCount + 1)), list())
+                self._temps = dict.fromkeys((i for i in 
+                    range(1, self._zoneCount + 1)), (0,TEMP_DEFAULT))
                 if getattr(self,'_c',None) is None:
                     self._c = Controller(self)
                     self._q = self._c.queue()
@@ -603,14 +673,22 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                 trace=self.Trace)
             # Every command has [device = 1, zone = 1-8, instruction = SEND(read)/ACPT(write), code = OUTPUT/TEMPERATURE/RAMP/...]
             POLL_PERIOD = 5.
-            commands = ([(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.OUTPUT) for z in range(self._zoneCount)]+
-                        [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.TEMP) for z in range(self._zoneCount)]+
-                        [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.ZONE_ON_OFF) for z in range(self._zoneCount)])
+            commands = ([(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" 
+                 % ElotechParameter.OUTPUT) for z in range(self._zoneCount)]+
+                [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" 
+                  % ElotechParameter.TEMP) for z in range(self._zoneCount)]+
+                [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" 
+                  % ElotechParameter.ZONE_ON_OFF) for z in 
+                                                    range(self._zoneCount)])
+
             [self.threadDict.append(c,period=POLL_PERIOD) for c in commands]
             self.threadDict.set_timewait(max((1e-3*self.Timewait,POLL_PERIOD/len(commands))))
-            commands = ([(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.OUTPUT_LIMIT) for z in range(self._zoneCount)]+
-                        [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" % ElotechParameter.SETPOINT) for z in range(self._zoneCount)])
+            commands = ([(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" 
+                          % ElotechParameter.OUTPUT_LIMIT) for z in range(self._zoneCount)]+
+                        [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" 
+                          % ElotechParameter.SETPOINT) for z in range(self._zoneCount)])
             [self.threadDict.append(c,period=3.*POLL_PERIOD) for c in commands]
+            
             self.threadDict.start()
         
         print "\tDevice server " + self.get_name() + " awaiting requests..."
@@ -901,9 +979,11 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         try:
             while not reply and retries:
                 retries-=1
+                
                 if ( self.ControllerType.lower() == "eurotherm" ):
                     reply = str(self.modbus().ReadHoldingRegisters([int(command[0]), int(command[1])])[0])
                     if self.Trace: print "\tRecv MODBUS: %s" % reply
+                    
                 elif ( self.ControllerType.lower() == "elotech" ):
                     if ( len(command) < 4 or len(command) > 5):
                         raise ValueError
@@ -914,14 +994,18 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                             elif i in (2,3): package.append(c)
                             elif ( i == 4 ): package.extend(self.elotech_value(c))
                             else: raise ValueError #package.append(c)
-                        if self.Trace: print '\tSending %s'%package
+                        if self.Trace: 
+                            print('\tSending %s'%package)
+                            
                         package.append(self.elotech_checksum(package))
                         sndCmd = "\n" + "".join(package) + "\r"
-                        if self.Trace: "\tSend block: %s" % sndCmd.strip()
+                        if self.Trace: 
+                            print("\tSend block: %s" % sndCmd.strip())
                         self.serial().flush() ##Needed to avoid errors parsing outdated strings!
                         self.serial().write(sndCmd)
                         ans = self.listen()
                         self.serial().flush() ##Needed to avoid errors parsing outdated strings!
+                        
                         if ( ans ):
                             try:
                                 if self.Trace: print "\tRecv block: %s" % ans.strip()
