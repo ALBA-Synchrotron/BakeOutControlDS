@@ -319,6 +319,9 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         self._temps[key] = (time.time(),value)
         
     def temperatureSpAttr(self,zone,attr=None):
+        """
+        This method reads the setpoints
+        """
         if ( self.ControllerType.lower() == "eurotherm" ):
             raise NotImplementedError
         
@@ -343,6 +346,26 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         if ( attr ): 
             attr.set_value(data)
         return data
+    
+    def setTemperatureSpAttr(self, zone, attr):
+        self.ptrace("In " + self.get_name() + ".setTemperatureSpAttr(%s)" % zone)
+        data = []
+        attr.get_write_value(data)
+        
+        if ( self.ControllerType.lower() == "eurotherm" ):
+            raise NotImplementedError
+        
+        elif ( self.ControllerType.lower() == "elotech" ):
+            device = 1
+            instruction = "%02X" % ElotechInstruction.ACPT
+            code = "%02X" % ElotechParameter.SETPOINT
+            self.ptrace("\tdevice = %s, instruction = %s, code = %s"
+                        % (device,instruction,code))
+            value = data[0]
+        else:
+            raise Exception("UnknownController: %s" % self.ControllerType)
+        
+        self.SendCommand([device, zone, instruction, code, value])    
         
     def setTempMax(self, tempMax):
         self._tempMax = tempMax
@@ -570,7 +593,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             self.add_attribute(attrib,self.read_dyn_attr,None,self.dyn_attr_allowed)
                 
             #"Temperature_1_Setpoint":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ_WRITE]],
-            attrib,format,unit = PyTango.Attr('Temperature_%d_Setpoint'%((i)),PyTango.DevDouble, PyTango.READ),'%d',''
+            attrib,format,unit = PyTango.Attr('Temperature_%d_Setpoint'%((i)),PyTango.DevDouble, PyTango.READ_WRITE),'%d',''
             print 'Creating attribute %s ...'%attrib
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
@@ -990,9 +1013,12 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                     else:
                         package = []
                         for i,c in enumerate(command):
-                            if i in (0,1): package.append("%02X" % int(c))
-                            elif i in (2,3): package.append(c)
-                            elif ( i == 4 ): package.extend(self.elotech_value(c))
+                            if i in (0,1): 
+                                package.append("%02X" % int(c))
+                            elif i in (2,3): 
+                                package.append(c)
+                            elif ( i == 4 ): 
+                                package.extend(self.elotech_value(c))
                             else: raise ValueError #package.append(c)
                         if self.Trace: 
                             print('\tSending %s'%package)
