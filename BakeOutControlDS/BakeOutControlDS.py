@@ -661,7 +661,8 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         print "In " + self.get_name() + ".init_device()"        
         self.set_state(PyTango.DevState.OFF)
         self.get_device_properties(self.get_device_class())
-        #self.update_properties()
+        self.Trace = str(self.Trace).strip().lower() not in (
+            '','false','no','none')
         
         try: 
             print 'PressureAttribute: %s'%self.PressureAttribute
@@ -1082,7 +1083,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                                 reply = str(ans)
 
                             if "%02X" % ElotechParameter.TEMP in code:
-                                print('%s: SendCommand(%s,TEMP): %s' 
+                                print('%s: Send(%s,TEMP), received: %s' 
                                 % (fandango.time2str(), zone, str(reply).strip()))
                             else:
                                 self.ptrace('SendCommand: %s' % str(reply).strip())
@@ -1142,9 +1143,9 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
 #    Device Properties
     device_property_list = {
         "Trace":
-            [PyTango.DevBoolean, 
+            [PyTango.DevString, 
             " ", 
-            [ False ] ], 
+            [ "" ] ], 
         "ControllerType":
             [PyTango.DevString, 
             " ", 
