@@ -279,6 +279,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
     
     def temperatureAttr(self, zone, attr=None):
         data = None
+        err = 'DataNotReceived'
         self.ptrace("In " + self.get_name() + ".temperatureAttr(%s)" % zone)
         
         if ( self.ControllerType.lower() == "eurotherm" ):
@@ -295,15 +296,20 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         ans = self.threadDict.get((device, zone, instruction, code))
         if ( ans ):
             try:
+                print(len(ans),ans,'should be 16 chars')
                 data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+                print(data)
             except Exception,e:
-                raise Exception,'UnableToParse(%s):%s'%(ans,e)
-            if data and -30<data<=1200: self.error_count = 0
-            else: data = None
+                err = 'temperatureAttr:UnableToParse(%s):%s'%(ans,e)
+                print(fandango.time2str(),err)
+            if data and -30<data<=1200: 
+                self.error_count = 0
+            else: 
+                data = None
         
         if data is None:
             self.error_count+=1
-            raise Exception,'DataNotReceived'
+            raise Exception,err
         
         self.setTemperature(zone, data)
         if ( attr ):
