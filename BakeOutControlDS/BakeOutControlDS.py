@@ -210,9 +210,9 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
         
-        ans = self.threadDict.get((device, zone, instruction, code))
+        ans = str(self.threadDict.get((device, zone, instruction, code))).strip()
         if ( ans ):
-            data = int(ans[9:13], 16)
+            data = int(ans[8:12], 16) #[9:13] without strip
         else:
             data = None
         
@@ -240,9 +240,9 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
 
-        ans = self.threadDict.get((device, zone, instruction, code))
+        ans = str(self.threadDict.get((device, zone, instruction, code))).strip()
         if ( ans ):
-            data = int(ans[9:13], 16)
+            data = int(ans[8:12], 16) # [9:13] without strip
         else:
             data = 100
         
@@ -290,22 +290,26 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
         
-        ans = self.threadDict.get((device, zone, instruction, code))
+        ans = str(self.threadDict.get((device, zone, instruction, code))).strip()
         if ( ans ):
             try:
-                data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+                #data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+                data = float(int(ans[8:12], 16)*10**int(ans[12:14], 16))
+                err = ''
                 self.last_errors[(device,zone,instruction,code)] = ''
                 self.last_errors[('temperatureAttr',zone)] = ''
 
             except Exception,e:
                 err = 'temperatureAttr:UnableToParse(%s):%s'%(ans,e)
+                self.ptrace(err,True)
                 self.last_errors[(device,zone,instruction,code)] = err
                 self.last_errors[('temperatureAttr',zone)] = err
-                self.ptrace(err,True)
 
             if data and -30<data<=1200: 
                 self.error_count = 0
             else: 
+                err = 'Wrong Data Range!! temperatureAttr(%s): %s' % (zone,data)
+                self.ptrace(err,True)
                 data = None
         else:
             err = self.last_errors[(device,zone,instruction,code)] or err
@@ -350,11 +354,12 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         else:
             raise Exception("UnknownController: %s" % self.ControllerType)
         
-        ans = self.threadDict.get((device, zone, instruction, code))
+        ans = str(self.threadDict.get((device, zone, instruction, code))).strip()
 
         if ( ans ) and len(ans)>13: 
             error_count = 0
-            data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+            #data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+            data = float(int(ans[8:12], 16)*10**int(ans[12:14], 16))
         else:
             self.error_count+=1
             raise Exception,'DataNotReceived'
@@ -943,9 +948,10 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                     code = "%02X" % ElotechParameter.ZONE_ON_OFF
 
                     for zone in range(1, self.zoneCount() + 1):
-                        ans = self.threadDict.get((device, zone, instruction, code))
+                        ans = str(self.threadDict.get((device, zone, instruction, code))).strip()
                         if ans and len(ans)>11:
-                            status[zone - 1] = [bool(int(ans[11:13])), False, 0]
+                            #status[zone - 1] = [bool(int(ans[11:13])), False, 0]
+                            status[zone - 1] = [bool(int(ans[10:12])), False, 0]
                         else: self.error_count+=1
 
                     for programNo in range(1, self.zoneCount() + 1):
@@ -1123,9 +1129,10 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                                 try:
                                     if is_temp and inst == "%02X" % ElotechInstruction.SEND:
                                         # Checking that value is parsable
-                                        data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+                                        r = str(ans).strip()
+                                        data = float(int(ans[8:12], 16)*10**int(ans[12:14], 16))
                                     self.last_errors[(dev,zone,inst,code)] = ''
-                                    reply = str(ans)
+                                    reply = str(ans) #.strip() is desirable, but should be well checked
                                 except:
                                     err = ('Unparsable(%s,%s): %d retries left'%(package,ans,retries))
                                     self.ptrace(err,True)
@@ -1230,7 +1237,7 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
         "Timeout":
             [PyTango.DevLong,
             "Timeout, in milliseconds, for an answer from the controller",
-            [ 200 ] ],            
+            [ 250 ] ],            
         "ProgramParams":
             [PyTango.DevVarStringArray, 
             "", 
