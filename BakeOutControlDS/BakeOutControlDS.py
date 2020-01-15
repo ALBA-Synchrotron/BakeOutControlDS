@@ -184,9 +184,9 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             return self._q
         raise AttributeError
     
-    def ptrace(self,msg):
-        if self.Trace:
-            print(msg)
+    def ptrace(self,msg,force=False):
+        if self.Trace or force:
+            print('%s\t%s\t%s' % (fandango.time2str(),self.get_name(),msg))
   
     def setSerial(self, serial):
         self._serial = serial
@@ -296,20 +296,29 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         ans = self.threadDict.get((device, zone, instruction, code))
         if ( ans ):
             try:
-                print(len(ans),ans,'should be 16 chars')
                 data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
-                print(data)
+                self.last_errors[(device,zone,instruction,code)] = ''
+                self.last_errors[('temperatureAttr',zone)] = ''
+
             except Exception,e:
                 err = 'temperatureAttr:UnableToParse(%s):%s'%(ans,e)
-                print(fandango.time2str(),err)
+                self.last_errors[(device,zone,instruction,code)] = err
+                self.last_errors[('temperatureAttr',zone)] = err
+                self.ptrace(err,True)
+
             if data and -30<data<=1200: 
                 self.error_count = 0
             else: 
                 data = None
+        else:
+            err = self.last_errors[(device,zone,instruction,code)] or err
+
+        self.ptrace('temperatureAttr(%s): %s: %s' % (
+            (device,zone,instruction,code),str(ans).strip(),data or err), True) #data is None
         
         if data is None:
             self.error_count+=1
-            raise Exception,err
+            raise Exception(err)
         
         self.setTemperature(zone, data)
         if ( attr ):
@@ -629,6 +638,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         
         self.NChannels = 8
         self.error_count = 0
+        self.last_errors = fandango.defaultdict(str)
         self._modbus = None
         self._serial = None
         self._zoneCount = 1
@@ -934,11 +944,13 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                     device = 1
                     instruction = "%02X" % ElotechInstruction.SEND
                     code = "%02X" % ElotechParameter.ZONE_ON_OFF
+
                     for zone in range(1, self.zoneCount() + 1):
                         ans = self.threadDict.get((device, zone, instruction, code))
                         if ans and len(ans)>11:
                             status[zone - 1] = [bool(int(ans[11:13])), False, 0]
                         else: self.error_count+=1
+
                     for programNo in range(1, self.zoneCount() + 1):
                         params = self.params(programNo)
                         for zone in self.zones(programNo):
@@ -973,15 +985,30 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                         statusStr += " | ALARM (program doesnt match!)"
                         self.set_state(PyTango.DevState.ALARM)
                     else:
-                        try:
-                            outputs = [self.outputAttr(i) for i in range(1,9)]
-                            temps = [self.temperatureAttr(i) for i in range(1,9)]
-                            statusStr = (
-                                'Outputs:'+','.join(map(str,outputs))+'\n' +
-                                'Temps:'+','.join(map(str,temps))+'\n' 
-                                    + statusStr)
-                        except:
-                            traceback.print_exc()
+                        outputs = []
+                        for i in range(1,9):
+                            try:
+                                o = self.outputAttr(i)
+                            except Exception,e:
+                                o = str(e)
+                                print('outputAttr(%d) failed!' % i)
+                                traceback.print_exc()
+                            outputs.append(o)
+
+                        temps = []
+                        for i in range(1,9):
+                            try:
+                                t = self.temperatureAttr(i)
+                            except Exception,e:
+                                t = str(e)
+                                print('temperatureAttr(%d) failed!' % i)
+                                traceback.print_exc()
+                            temps.append(t)
+
+                        statusStr = (
+                            'Outputs:'+','.join(map(str,outputs))+'\n' +
+                            'Temps:'+','.join(map(str,temps))+'\n' 
+                                + statusStr)
                             
                         if any(st[0] for st in status):
                             if any(st[1] for st in status):
@@ -990,6 +1017,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                             else:
                                 statusStr = 'Bakeout is ON\n'+statusStr
                                 self.set_state(PyTango.DevState.ON)
+
                         elif self.get_state()!=PyTango.DevState.DISABLE:
                             statusStr = 'Bakeout is OFF\n'+statusStr
                             self.set_state(PyTango.DevState.OFF)
@@ -1053,13 +1081,14 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                             elif ( i == 4 ): 
                                 package.extend(self.elotech_value(c))
                             else: raise ValueError #package.append(c)
+
                         dev,zone,inst,code = package[:4]
-                        self.ptrace('SendCommand: %s' % str(package))
+                        is_temp = "%02X" % ElotechParameter.TEMP in code
+                        self.ptrace('SendCommand: %s, %d retries left' % (str(package),retries),is_temp)
                             
                         package.append(self.elotech_checksum(package))
                         sndCmd = "\n" + "".join(package) + "\r"
-                        if self.Trace: 
-                            self.ptrace("\tSend block: %s" % sndCmd.strip())
+                        self.ptrace("\tSend block: %s" % sndCmd.strip())
                         self.serial().flush() ##Needed to avoid errors parsing outdated strings!
                         self.serial().write(sndCmd)
                         ans = self.listen()
@@ -1067,39 +1096,60 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                         
                         if ( ans ):
                             try:
-                                if self.Trace: print "\tRecv block: %s" % ans.strip()
+                                self.ptrace("\tRecv block: %s" % ans.strip()) #, is_temp)
                                 ##This will raise KeyError if no error is found
                                 if len(ans)>7: err =  ElotechError.whatis(int(ans[7:9], 16)) 
                                 else: err = ans
                                 msg = 'SendCommandException:%s'%(err)
-                                if not retries: raise Exception(msg)
+                                if not retries:
+                                    self.ptrace('Exception(%s): %d retries left'%(msg,retries),True)
+                                    raise Exception(msg)
                                 else: 
-                                    print('Exception(%s): %d retries left'%(msg,retries))
+                                    self.ptrace('Exception(%s): %d retries left'%(msg,retries),is_temp)
                             except KeyError:
                                 pass ##No errors, so we continue ...
+
                             #if ans[-2:]!=self.elotech_checksum(ans[:-2]): #Checksum calcullation may not match with expected one
                                 #raise Exception('ChecksumFailed! %s!=%s'%(ans[-2:],self.elotech_checksum(ans[:-2])))
+
+                            # Checking Zone number
                             if sndCmd.strip()[:4]!=ans.strip()[:4]:
-                                msg = 'AnswerDontMatchZone! send(%s)!=%s'%(sndCmd.strip(),ans.strip())
+                                msg = 'AnswerDontMatchZone! send(%s)!=%s'%(sndCmd.strip()[:4],ans.strip()[:4])
                                 if not retries: 
+                                    self.last_errors[(dev,zone,inst,code)] = msg
+                                    self.ptrace(msg,True)
                                     raise Exception(msg)
                                 else: 
                                     print('Exception(%s): %d retries left'%(msg,retries))
-                            else:
-                                reply = str(ans)
 
-                            if "%02X" % ElotechParameter.TEMP in code:
-                                print('%s: Send(%s,TEMP), received: %s' 
-                                % (fandango.time2str(), zone, str(reply).strip()))
-                            else:
-                                self.ptrace('SendCommand: %s' % str(reply).strip())
+                            else: # Data Received
+                                try:
+                                    if is_temp and inst == "%02X" % ElotechInstruction.SEND:
+                                        # Checking that value is parsable
+                                        data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+                                    self.last_errors[(dev,zone,inst,code)] = ''
+                                    reply = str(ans)
+                                except:
+                                    err = ('Unparsable(%s,%s): %d retries left'%(package,ans,retries))
+                                    self.ptrace(err,True)
+                                    self.last_errors[(dev,zone,inst,code)] = err
+
+                            self.ptrace('Send%s(%s): %s' % (
+                                'Temp' if "%02X" % ElotechParameter.TEMP in code else 'Command',
+                                    sndCmd.strip(),str(reply).strip()), "%02X" % ElotechParameter.TEMP in code)
                         else:
-                            if not retries: raise Exception("ConnectionError")
-                            else: print 'Exception("ConnectionError"): %d retries left'%retries
+                            if not retries: 
+                                self.last_errors[(dev,zone,inst,code)] = '%sDataNotReceived'%code
+                                self.ptrace('%sDataNotReceived'%code,True)
+                                raise Exception('%sDataNotReceived'%code)
+                            else: 
+                                print 'Exception("ConnectionError"): %d retries left'%retries
                 else:
                     raise Exception("UnknownController: %s" % self.ControllerType) 
+
             return reply
         except Exception,e:
+            traceback.print_exc()
             print ('Exception in %s.SendCommand(%s): %s' % (self.get_name(),command,traceback.format_exc()))
         finally:
             self.serialLock.release()
