@@ -159,19 +159,16 @@ class BakeOutControlDS(PyTango.Device_4Impl):
     def int2bin(self, n, count=8):
         return "".join([str((n >> y) & 1) for y in range(count - 1, -1, -1)])
     
-    def listen(self):
-        retries,waittime = 5,1e-3*self.Timeout
-        sleeper = Event()
-        sleeper.wait(waittime/retries)
-        s = self.serial().readline()
-        if ( not s ):
-            ts = retries
-            while ( not s and ts ):
-                sleeper.wait(waittime/retries)
-                s = self.serial().readline()
-                ts -= 1
+    def listen(self, retries = 5):
+        # A minimum time of 2*Timeout/retries is always needed
+        waittime, t0 = self.Timeout * 1e-3/retries, fandango.now()
+        for i in range(retries-1):
+            fandango.wait(waittime)
+            s = self.serial().readline()
+            if s: break
+        fandango.wait(waittime) #0.05)
         s += self.serial().readline()
-        
+        self.ptrace('listen(%s) took %f ms' % (str(s).strip(),1e3*(fandango.now()-t0)))
         return s
     
     def modbus(self):
@@ -1233,7 +1230,7 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
         "Timeout":
             [PyTango.DevLong,
             "Timeout, in milliseconds, for an answer from the controller",
-            [ 250 ] ],            
+            [ 200 ] ],            
         "ProgramParams":
             [PyTango.DevVarStringArray, 
             "", 
