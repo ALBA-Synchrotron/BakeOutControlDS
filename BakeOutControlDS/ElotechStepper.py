@@ -29,10 +29,7 @@ import traceback
 from threading import Event, Lock
 from Queue import Queue
 import PyTango
-try:
-    from tau.core.utils import Enumeration
-except:
-    from fandango.dicts import Enumeration
+from fandango.dicts import Enumeration
 
 TEMP_ROOM = 25.
 TEMP_DEFAULT = 1200.
