@@ -30,9 +30,12 @@ requirements:
 
 test:
   requires:
-    - pytango
     - fandango
-  import: {{data.get('packages')}}
+    - pytango
+  imports:
+    {% for pack in data['packages'] %}
+    - {{pack}}
+    {% endfor %}
 
 about:
   home: {{ data.get('url')}}
