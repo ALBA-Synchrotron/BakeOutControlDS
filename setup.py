@@ -6,10 +6,10 @@ from setuptools import setup, find_packages
 # Do not update manually
 __version = '1.0.1'
 
-long_description = """
-This python module provides classes used by BakeOutControlDS Devices
-It provides BakeOutControlDS Tango Device Server
-"""
+long_description = 'This python module provides classes used by ' \
+                   'BakeOutControlDS Devices. It provides BakeOutControlDS ' \
+                   'Tango Device Server'
+
 
 
 classifiers = [
