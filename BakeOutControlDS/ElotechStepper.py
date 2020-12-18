@@ -24,7 +24,7 @@
 #               www.cells.es, Barcelona
 #
 
-import threading,time,serial
+import threading,time
 import traceback
 from threading import Event, Lock
 from Queue import Queue
@@ -54,7 +54,8 @@ ElotechParameter = Enumeration(
     ("RAMP", int("2F", 16)),
     ("OUTPUT", int("60", 16)),
     ("OUTPUT_LIMIT", int("64", 16)),
-    ("ZONE_ON_OFF", int("8F", 16))              
+    ("ZONE_ON_OFF", int("8F", 16)),
+    ("ALARM1", int("38", 16)),
 ))
 
 ElotechError = Enumeration(

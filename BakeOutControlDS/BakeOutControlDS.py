@@ -25,13 +25,18 @@
 #
 
 import fandango
+import fandango.tango as ft
 import PyTango
 if 'PyUtil' not in dir(PyTango): #For PyTango7-3 backward compatibility
     PyTango.PyUtil = PyTango.Util
     PyTango.PyDeviceClass = PyTango.DeviceClass
     PyTango.Device_3Impl = PyTango.Device_4Impl
 
-import serial
+try:
+    import serial
+except:
+    print(fandango.except2str())
+    
 import sys
 import threading
 import time
@@ -142,18 +147,28 @@ class BakeOutControlDS(PyTango.Device_4Impl):
     
     def init_serial(self):
         self.serialLock.acquire()
-        if ( hasattr(self, "_serial") and self._serial ): 
-            self.serial().close()
-        self._serial = serial.Serial()
-        self._serial.baudrate = 9600
-        self._serial.bytesize = 7
-        self._serial.parity = "E"
-        self._serial.stopbits = 1
-        self._serial.timeout = 0
-        self._serial.port = self.CommsDevice
-        self._serial.xonxoff = 0
-        self._serial.rtscts = 0
-        self._serial.open()
+        
+        if fandango.clmatch(ft.retango,self.CommsDevice):
+            #Using a Serial Device Server
+            self._serial = PyTango.DeviceProxy(self.CommsDevice)
+            props = {'Baudrate':9600,'Parity':'even','Stopbits':1,
+                     'Charlength':7,'Timeout':200}
+            fandango.put_device_property(self.CommsDevice,props)
+            self._serial.init()
+        else:
+            if ( hasattr(self, "_serial") and self._serial ): 
+                self.serial().close()
+            self._serial = serial.Serial()
+            self._serial.baudrate = 9600
+            self._serial.bytesize = 7
+            self._serial.parity = "E"
+            self._serial.stopbits = 1
+            self._serial.timeout = 0
+            self._serial.port = self.CommsDevice
+            self._serial.xonxoff = 0
+            self._serial.rtscts = 0
+            self._serial.open()
+        
         self.serialLock.release()
         
     def int2bin(self, n, count=8):
@@ -404,6 +419,70 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         
     def setTempMax(self, tempMax):
         self._tempMax = tempMax
+        
+    def alarmSpAttr(self,zone,attr=None):
+        """
+        This method reads the setpoints
+        """
+        if ( self.ControllerType.lower() == "eurotherm" ):
+            raise NotImplementedError
+        
+        elif ( self.ControllerType.lower() == "elotech" ):
+            device = 1
+            instruction = "%02X" % ElotechInstruction.SEND
+            code = "%02X" % ElotechParameter.ALARM1
+            self.ptrace("\tdevice = %s, instruction = %s, code = %s"
+                        % (device,instruction,code))
+        else:
+            raise Exception("UnknownController: %s" % self.ControllerType)
+        
+        ans = str(self.threadDict.get((device, zone, instruction, code))).strip()
+
+        if ( ans ) and len(ans)>13: 
+            error_count = 0
+            #data = float(int(ans[9:13], 16)*10**int(ans[13:15], 16))
+            data = float(int(ans[8:12], 16)*10**int(ans[12:14], 16))
+        else:
+            self.error_count+=1
+            raise Exception,'DataNotReceived'
+        
+        if ( attr ): 
+            attr.set_value(data)
+        return data
+    
+    def setAlarmSpAttr(self, zone, attr):
+        self.ptrace("In " + self.get_name() + ".setAlarmSpAttr(%s)" % zone)
+        threaded = self.threadDict and self.threadDict.alive()
+        try:
+            data = []
+            attr.get_write_value(data)
+            threaded and self.threadDict.stop()
+            
+            if ( self.ControllerType.lower() == "eurotherm" ):
+                raise NotImplementedError
+            
+            elif ( self.ControllerType.lower() == "elotech" ):
+                device = 1
+                instruction = "%02X" % ElotechInstruction.ACPT
+                code = "%02X" % ElotechParameter.ALARM1
+                self.ptrace("\tdevice = %s, instruction = %s, code = %s"
+                            % (device,instruction,code))
+                value = data[0]
+            else:
+                raise Exception("UnknownController: %s" % self.ControllerType)
+            
+            r = self.SendCommand([device, zone, instruction, code, value])
+            
+            if ( self.ControllerType.lower() == "elotech" ):
+                key = (device, zone, "%02X" % ElotechInstruction.SEND, 
+                        "%02X" % ElotechParameter.SETPOINT)
+
+                if threaded and key in self.threadDict:
+                    self.threadDict.__getitem__(key,hw=True)
+                
+            return r
+        finally:
+            threaded and self.threadDict.start()        
 
     ###########################################################################
     # Methods to manage the Programming of bakeouts
@@ -562,6 +641,16 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                     self.setTemperatureSpAttr(index,attr)
             else: 
                 raise Exception('UnkownAttribute_%s'%attr_name)
+        elif key=='alarm':
+            #if not param:
+                #self.temperatureAttr(index,attr)
+            if param=='setpoint': 
+                if not WRITE: 
+                    self.alarmSpAttr(index,attr)
+                else: 
+                    self.setAlarmSpAttr(index,attr)
+            else: 
+                raise Exception('UnkownAttribute_%s'%attr_name)            
         else: 
             raise Exception('UnkownAttribute_%s'%attr_name)
         return
@@ -628,6 +717,12 @@ class BakeOutControlDS(PyTango.Device_4Impl):
             props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
             attrib.set_default_properties(props)
             self.add_attribute(attrib,self.read_dyn_attr,self.write_dyn_attr,self.dyn_attr_allowed)
+            
+            #"Temperature_1_Setpoint":[[PyTango.DevDouble, PyTango.SCALAR, PyTango.READ_WRITE]],
+            attrib,format,unit = PyTango.Attr('Alarm_%d_Setpoint'%((i)),PyTango.DevDouble, PyTango.READ_WRITE),'%d',''
+            props = PyTango.UserDefaultAttrProp(); props.set_format(format); props.set_unit(unit)
+            attrib.set_default_properties(props)
+            self.add_attribute(attrib,self.read_dyn_attr,self.write_dyn_attr,self.dyn_attr_allowed)            
             
         print "%s.dyn_attr() finished" % (self.get_name())
             
@@ -718,6 +813,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
         except Exception, e:
 #            self._modbus = None
 #            self._serial = None
+            print(fandango.except2str())
             raise Exception("InitError", e)
             
         if self.threadDict is None:
@@ -731,6 +827,8 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                  % ElotechParameter.OUTPUT) for z in range(self._zoneCount)]+
                 [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" 
                   % ElotechParameter.TEMP) for z in range(self._zoneCount)]+
+                [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" 
+                  % ElotechParameter.ALARM1) for z in range(self._zoneCount)]+                
                 [(1,z+1,"%02X" % ElotechInstruction.SEND,"%02X" 
                   % ElotechParameter.ZONE_ON_OFF) for z in 
                                                     range(self._zoneCount)])
@@ -1092,10 +1190,18 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                         package.append(self.elotech_checksum(package))
                         sndCmd = "\n" + "".join(package) + "\r"
                         self.ptrace("\tSend block: %s" % sndCmd.strip())
-                        self.serial().flush() ##Needed to avoid errors parsing outdated strings!
-                        self.serial().write(sndCmd)
-                        ans = self.listen()
-                        self.serial().flush() ##Needed to avoid errors parsing outdated strings!
+
+                        if fandango.clmatch(ft.retango,self.CommsDevice):
+                            self.serial().DevSerFlush(2)
+                            self.serial().DevSerWriteString(sndCmd)
+                            fandango.wait(.05)
+                            ans = self.serial().DevSerReadRaw()
+                            self.serial().DevSerFlush(2)
+                        else:
+                            self.serial().flush() ##Needed to avoid errors parsing outdated strings!
+                            self.serial().write(sndCmd)
+                            ans = self.listen()
+                            self.serial().flush() ##Needed to avoid errors parsing outdated strings!
                         
                         if ( ans ):
                             try:
