@@ -31,7 +31,7 @@ try:
 except:
     import PyTango
     
-if 'LatestDeviceClass' not in dir(PyTango): #For PyTango7-3 backward compatibility
+if 'LatestDeviceImpl' not in dir(PyTango): #For PyTango7-3 backward compatibility
     PyTango.Util = PyTango.PyUtil
     PyTango.DeviceClass = PyTango.PyDeviceClass
     PyTango.LatestDeviceImpl = PyTango.Device_4Impl
@@ -39,7 +39,8 @@ if 'LatestDeviceClass' not in dir(PyTango): #For PyTango7-3 backward compatibili
 try:
     import serial
 except:
-    print(fandango.except2str())
+    print('pyserial not available, tangods-serial used instead')
+    #print(fandango.except2str())
     
 import sys
 import threading

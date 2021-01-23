@@ -27,12 +27,15 @@ entry_points = {
         ]
 }
 
+scripts = [ 'bin/BakeOutControlDS' ]
+
 setup(
     name='BakeOutControlDS',
     version=__version,
     include_package_data=True,
     packages=find_packages(),
-    entry_points=entry_points,
+    #entry_points=entry_points,
+    scripts=scripts,
     author='Sergi Rubio',
     author_email='srubio@cells.es',
     maintainer='srubio',
@@ -43,6 +46,6 @@ setup(
     description='BakeOutControlDS Tango Device Server',
     long_description=long_description,
     requires=['setuptools (>=1.1)'],
-    #install_requires=['python-numpy', 'python-tango', 'python-fandango'],
+    install_requires=['python-numpy', 'python-tango', 'python-fandango'],
     classifiers=classifiers
 )
