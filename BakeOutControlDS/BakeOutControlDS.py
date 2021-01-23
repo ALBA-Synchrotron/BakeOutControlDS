@@ -26,11 +26,15 @@
 
 import fandango
 import fandango.tango as ft
-import PyTango
-if 'PyUtil' not in dir(PyTango): #For PyTango7-3 backward compatibility
-    PyTango.PyUtil = PyTango.Util
-    PyTango.PyDeviceClass = PyTango.DeviceClass
-    PyTango.Device_3Impl = PyTango.Device_4Impl
+try:
+    import tango as PyTango
+except:
+    import PyTango
+    
+if 'LatestDeviceClass' not in dir(PyTango): #For PyTango7-3 backward compatibility
+    PyTango.Util = PyTango.PyUtil
+    PyTango.DeviceClass = PyTango.PyDeviceClass
+    PyTango.LatestDeviceImpl = PyTango.Device_4Impl
 
 try:
     import serial
@@ -82,7 +86,7 @@ USE_STATIC_METHODS = getattr(PyTango,'__version_number__',0)<722
 #
 #===============================================================================
 
-class BakeOutControlDS(PyTango.Device_4Impl):
+class BakeOutControlDS(PyTango.LatestDeviceImpl):
     """
     Wiki available at http://redmine.cells.es/wiki/frontendbk/BakeOutControl
 
@@ -731,7 +735,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
 #------------------------------------------------------------------------------ 
     def __init__(self, cl, name):
         print "In __init__()"        
-        PyTango.Device_3Impl.__init__(self, cl, name)
+        PyTango.LatestDeviceImpl.__init__(self, cl, name)
         
         self.NChannels = 8
         self.error_count = 0
@@ -1194,7 +1198,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
                         if fandango.clmatch(ft.retango,self.CommsDevice):
                             self.serial().DevSerFlush(2)
                             self.serial().DevSerWriteString(sndCmd)
-                            fandango.wait(.05)
+                            fandango.wait(.1)
                             ans = self.serial().DevSerReadRaw()
                             self.serial().DevSerFlush(2)
                         else:
@@ -1301,7 +1305,7 @@ class BakeOutControlDS(PyTango.Device_4Impl):
 # BakeOutControlDSClass class definition
 #
 #===============================================================================
-class BakeOutControlDSClass(PyTango.PyDeviceClass):
+class BakeOutControlDSClass(PyTango.DeviceClass):
 #    Class Properties    
     class_property_list = {
         }
@@ -1457,7 +1461,7 @@ class BakeOutControlDSClass(PyTango.PyDeviceClass):
 #===============================================================================
 def main():
     try:
-        py = PyTango.PyUtil(sys.argv)
+        py = PyTango.Util(sys.argv)
         py.add_TgClass(BakeOutControlDSClass, BakeOutControlDS, "BakeOutControlDS")
 
         U = PyTango.Util.instance()
